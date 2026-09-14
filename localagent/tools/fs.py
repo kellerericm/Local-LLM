@@ -98,6 +98,28 @@ def list_dir(ctx: ToolContext, path: str = ".") -> ToolResult:
     return ToolResult(f"{p} ({len(entries)} entries)\n" + ("\n".join(rows) or "(empty)") + more)
 
 
+def glob_match(rel_posix: str, spec: str) -> bool:
+    """Match a path relative to the search root against a glob spec.
+
+    Accepts what models commonly write: bare names ('*.py'), path globs ('src/**/*.py', where
+    '**/' may match zero directories), comma/semicolon/space-separated lists, and '{py,md}' braces.
+    """
+    name = rel_posix.rsplit("/", 1)[-1]
+    patterns: list[str] = []
+    for part in re.split(r"[,;\s]+(?![^{]*\})", spec.strip()):   # don't split inside {a,b}
+        if not part:
+            continue
+        m = re.search(r"\{([^}]*)\}", part)
+        alts = [part[:m.start()] + a + part[m.end():] for a in m.group(1).split(",")] if m else [part]
+        patterns.extend(p.replace("\\", "/").removeprefix("./") for p in alts)
+    for pat in patterns:
+        variants = {pat, pat.replace("**/", ""), pat.replace("/**/", "/")}
+        for v in variants:
+            if fnmatch.fnmatch(rel_posix, v) or ("/" not in v and fnmatch.fnmatch(name, v)):
+                return True
+    return False
+
+
 def _walk(root: Path):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -110,7 +132,7 @@ def glob_files(ctx: ToolContext, pattern: str, path: str = ".") -> ToolResult:
     matches = []
     for f in _walk(root):
         rel = f.relative_to(root).as_posix()
-        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(f.name, pattern):
+        if glob_match(rel, pattern):
             matches.append(rel)
             if len(matches) >= MAX_MATCHES:
                 break
@@ -130,7 +152,7 @@ def grep(ctx: ToolContext, pattern: str, path: str = ".", file_glob: str | None 
     files = [root] if root.is_file() else _walk(root)
     hits = []
     for f in files:
-        if file_glob and not fnmatch.fnmatch(f.name, file_glob):
+        if file_glob and root.is_dir() and not glob_match(f.relative_to(root).as_posix(), file_glob):
             continue
         if _is_binary(f):
             continue
@@ -146,7 +168,9 @@ def grep(ctx: ToolContext, pattern: str, path: str = ".", file_glob: str | None 
         if len(hits) >= MAX_MATCHES:
             break
     if not hits:
-        return ToolResult(f"No matches for {pattern!r}.")
+        scope = f" in files matching {file_glob!r}" if file_glob else ""
+        return ToolResult(f"No matches for {pattern!r} under {root}{scope}. "
+                          + ("Try again without file_glob to search all files." if file_glob else ""))
     note = f"\n(stopped at {MAX_MATCHES} matches; narrow the search)" if len(hits) >= MAX_MATCHES else ""
     return ToolResult("\n".join(hits) + note)
 

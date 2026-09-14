@@ -14,12 +14,17 @@ from ..safety.paths import PathGuard, normalize
 class ToolError(Exception):
     """An expected failure; the message is shown to the model."""
 
+    def __init__(self, message: str, denied: bool = False):
+        super().__init__(message)
+        self.denied = denied
+
 
 @dataclass
 class ToolResult:
     content: str
     ok: bool = True
     end_turn: bool = False          # stop the agent loop and wait for the user
+    denied: bool = False            # the user or the policy refused; later calls in the same message are skipped
 
 
 @dataclass
@@ -63,7 +68,7 @@ class ToolContext:
         if self.ask([key], f"{verb} a location outside the workspace", str(rp)):
             return rp
         raise ToolError(f"The user denied {mode} access to {rp}. Stay inside the workspace "
-                        f"({self.workspace}) or ask the user how to proceed.")
+                        f"({self.workspace}) or ask the user how to proceed.", denied=True)
 
 
 @dataclass

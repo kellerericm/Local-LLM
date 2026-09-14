@@ -55,6 +55,21 @@ class TransformersBackend:
         else:
             self.model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
         self.model.eval()
+        self.stop_token_ids = self._stop_tokens()
+
+    def _stop_tokens(self) -> list[int]:
+        """End-of-turn tokens. Some checkpoints (e.g. Qwen3.5) ship no generation_config, so the default
+        eos is <|endoftext|> and generation runs past <|im_end|>, inventing further turns."""
+        ids: list[int] = []
+        gen_eos = getattr(getattr(self.model, "generation_config", None), "eos_token_id", None)
+        for value in (gen_eos, self.tokenizer.eos_token_id):
+            ids.extend(value if isinstance(value, list) else [value] if value is not None else [])
+        unk = self.tokenizer.unk_token_id
+        for tok in ("<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>"):
+            tid = self.tokenizer.convert_tokens_to_ids(tok)
+            if isinstance(tid, int) and tid >= 0 and tid != unk:
+                ids.append(tid)
+        return list(dict.fromkeys(ids))
 
     @staticmethod
     def _is_multimodal(config) -> bool:
@@ -101,7 +116,10 @@ class TransformersBackend:
 
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         gen_kwargs = dict(**enc, streamer=streamer, max_new_tokens=int(params.get("max_new_tokens", 4096)),
-                          stopping_criteria=StoppingCriteriaList([ControlCriteria()]))
+                          stopping_criteria=StoppingCriteriaList([ControlCriteria()]),
+                          eos_token_id=self.stop_token_ids,
+                          pad_token_id=self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None
+                          else self.stop_token_ids[0])
         temperature = float(params.get("temperature", 0.6))
         if temperature > 0:
             gen_kwargs.update(do_sample=True, temperature=temperature, top_p=float(params.get("top_p", 0.95)),

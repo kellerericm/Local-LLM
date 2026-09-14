@@ -102,6 +102,19 @@ def test_denied_outside_path(store, settings, workspace, tmp_path):
     assert approver.requests and approver.requests[0]["scope"] != "general"
 
 
+def test_calls_after_a_denial_in_same_message_are_skipped(store, settings, workspace, tmp_path):
+    chat = project_chat(store, workspace)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("top secret")
+    batch = call("read_file", path=str(secret)) + call("write_file", path="copy.txt", content="invented contents")
+    coord, _, _ = make(store, settings, [batch, "ok"], AutoApprover(allow=False))
+    coord.run(chat, "copy the secret")
+    results = [m for m in store.list_messages(chat) if m["role"] == "tool"]
+    assert "denied" in results[0]["content"]
+    assert results[1]["content"].startswith("Not run") and not results[1]["ok"]
+    assert not (workspace / "copy.txt").exists()
+
+
 def test_policy_blocks_os_changes_without_asking(store, settings, workspace):
     chat = project_chat(store, workspace)
     approver = AutoApprover(allow=True)

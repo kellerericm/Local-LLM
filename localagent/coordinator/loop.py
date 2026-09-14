@@ -128,6 +128,13 @@ class Coordinator:
                     self._add(chat_id, "tool", result.content, tool_call_id=call["id"], name=call["name"],
                               ok=result.ok)
                     end_turn = end_turn or result.end_turn
+                    if result.denied or result.end_turn:
+                        # Later calls were planned without knowing this outcome; make the model re-plan.
+                        why = "was denied" if result.denied else "asked the user a question"
+                        for c in calls[i + 1:]:
+                            self._add(chat_id, "tool", f"Not run: an earlier tool call in this message {why}. "
+                                      "Re-plan based on that result.", tool_call_id=c["id"], name=c["name"], ok=False)
+                        break
                 if cancel.is_set():
                     outcome = "cancelled"
                     break
@@ -214,7 +221,7 @@ class Coordinator:
                 r = tool.fn(ctx, **call["arguments"])
                 box.append(r if isinstance(r, ToolResult) else ToolResult(str(r)))
             except ToolError as e:
-                box.append(ToolResult(str(e), ok=False))
+                box.append(ToolResult(str(e), ok=False, denied=e.denied))
             except TypeError as e:
                 box.append(ToolResult(f"Bad arguments for {tool.name}: {e}", ok=False))
             except Exception as e:

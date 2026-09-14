@@ -19,10 +19,10 @@ def python_exe(env_path: Path) -> Path:
 def run_python(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
     decision = ctx.policy.evaluate_python(code, ctx.guard)
     if decision.action == "deny":
-        return ToolResult(f"Blocked by policy ({decision.summary}).", ok=False)
+        return ToolResult(f"Blocked by policy ({decision.summary}).", ok=False, denied=True)
     if decision.action == "ask":
         if not ctx.ask(decision.keys, "Run Python code", f"{code}\n\nWhy approval is needed: {decision.summary}"):
-            return ToolResult(f"The user denied running this code ({decision.summary}). Adapt or ask the user.", ok=False)
+            return ToolResult(f"The user denied running this code ({decision.summary}). Adapt or ask the user.", ok=False, denied=True)
     tmp = Path(ctx.settings.tmp_dir)
     tmp.mkdir(parents=True, exist_ok=True)
     script = tmp / f"snippet_{int(time.time())}_{uuid.uuid4().hex[:6]}.py"

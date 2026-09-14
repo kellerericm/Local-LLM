@@ -26,7 +26,7 @@ def create_project(ctx: ToolContext, name: str, workspace_path: str, description
     detail = (f"Name: {name}\nWorkspace folder: {ws}{'' if ws.exists() else ' (will be created)'}\n"
               f"Description: {description or '-'}\nMove this chat into the project: {'yes' if move_this_chat else 'no'}")
     if not ctx.ask([f"create-project:{normalize(ws)}"], "Create a project", detail):
-        return ToolResult("The user declined to create this project. Ask what they would prefer.", ok=False)
+        return ToolResult("The user declined to create this project. Ask what they would prefer.", ok=False, denied=True)
     ws.mkdir(parents=True, exist_ok=True)
     project = ctx.store.create_project(name, str(ws), description=description)
     if move_this_chat:

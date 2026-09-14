@@ -9,6 +9,27 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-14 — Phase 3 capability probes (Qwen3.5-9B)
+- **Question:** Can the default model fill the roles the Phase 3 job design gives it (planning, note-taking with quotes, reviewing, experimenting)?
+- **Setup:**
+  - Scripts: `bench/probes/phase3_capabilities.py` (P1–P4) and `bench/probes/tune_me_agentic.py` (P4b).
+  - Workloads: `sandbox/`. Settings: 4-bit, thinking on, reasoning budget 3000 (2000 for P4b).
+  - Raw results: `D:\LocalAgent\bench-runs\20260914-101039_phase3_probes\`, `…\20260914-102404_tune_me_agentic\`.
+- **Status:** done.
+- **Results:**
+  - **P1 planning:** a valid plan, but shallow: 5 flat tasks, vague "done when" conditions, and no step for conflicting sources. (63 s)
+  - **P2 notes:** 13/13 quotes verbatim, and correctly no notes from the irrelevant document. Slow: 186 s on one short document with 2.2k thinking tokens.
+  - **P3 reviewer:** caught both planted errors, no false alarms. (51 s)
+  - **P4 one-shot experiments:** no improvement over 3 rounds (guessed from a data excerpt).
+  - **P4b tool-using experiments:** 3.01 → 0.327 in 6.5 min. But its own log omitted a broken attempt, and hidden checks show overfitting: 0.37 inside the data range, 15.6 on extrapolation (baseline 2.95, true function 0.31).
+- **Conclusions (applied to docs/design/phase3_long_running_tasks.md):**
+  - Templates build plan structure in code; model-written plans get linted.
+  - Note-taking and review are reliable enough to build on.
+  - Auto-research proposals must be tool-using sessions. The coordinator owns the experiment log and decides keep/revert on a validation check the agent can't see.
+- **Follow-ups:**
+  - Measure deep-read speed and accuracy with a ~1k reasoning budget.
+  - Optimized linear-attention kernels (open_questions.md).
+
 ## 2026-09-13/14 — Model selection benchmark
 - **Question:** Which locally runnable model (under 20 GB on disk, fits 16 GB VRAM) is the best default for agentic tool use?
 - **Setup:**

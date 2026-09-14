@@ -1,0 +1,28 @@
+{
+  "question": "How has phosphorus pollution in Lake Veyra changed since 2019, what drives it, and what is being done?",
+  "required_facts": [
+    {"id": "tp_2019_north", "fact": "North basin mean TP was 38 µg/L in 2019", "source": "2019_baseline_survey.md", "match_any": ["38 µg/L", "38 ug/L", "38"]},
+    {"id": "tp_2022_north", "fact": "North basin mean TP fell to 29 µg/L in 2022", "source": "2022_monitoring_update.md", "match_any": ["29"]},
+    {"id": "tp_2024_north", "fact": "North basin mean TP was 26 µg/L in 2024", "source": "2024_monitoring_update.md", "match_any": ["26"]},
+    {"id": "south_stable", "fact": "South basin TP stayed roughly stable (21 to 20 µg/L)", "source": "2022_monitoring_update.md", "match_any": ["21", "20 µg/L"]},
+    {"id": "bloom_days", "fact": "Algal bloom days fell from 41 (2019) to 22 (2024)", "source": "2024_monitoring_update.md", "match_any": ["41", "22"]},
+    {"id": "tamsin_55", "fact": "2021 study: Tamsin Creek ~55% of external load", "source": "2021_agricultural_runoff_report.txt", "match_any": ["55%"]},
+    {"id": "tamsin_30", "fact": "2023 consultant review: Tamsin Creek ~30%, 2021 estimate too high; internal loading from sediments", "source": "2023_consultant_review.md", "match_any": ["30%"]},
+    {"id": "buffer_strips", "fact": "Buffer strips on 12 farms by end of 2021", "source": "2021_agricultural_runoff_report.txt", "match_any": ["12 farms", "buffer strip"]},
+    {"id": "aeration_pilot", "fact": "Two-year north basin aeration pilot starting summer 2025", "source": "meeting_minutes_2024_03.md", "match_any": ["aeration"]},
+    {"id": "target_2027", "fact": "Target: north basin TP below 25 µg/L by 2027", "source": "meeting_minutes_2024_03.md", "match_any": ["2027"]},
+    {"id": "dry_year_caveat", "fact": "2022 was a dry year; part of the decline may reflect lower runoff", "source": "2022_monitoring_update.md", "match_any": ["dry"]}
+  ],
+  "contradiction": {
+    "description": "Tamsin Creek share of external phosphorus load: 55% (2021 Council study, one wet year) vs ~30% (2023 consultant, three years + sediment cores)",
+    "sources": ["2021_agricultural_runoff_report.txt", "2023_consultant_review.md"],
+    "expectation": "The report should present both estimates and explain the disagreement, not silently pick one."
+  },
+  "irrelevant_sources": ["trail_maintenance_notice.txt"],
+  "nice_to_have": [
+    "Budget cut 15% in 2024 and septic cost-share paused (2023_budget_memo.txt)",
+    "Volunteer sampling corps collected 61% of 2024 samples (2024_monitoring_update.md)",
+    "Late-summer TP spikes at deep stations with low oxygen in 2024, consistent with internal loading"
+  ],
+  "citation_rule": "Every quote attributed to a source must appear verbatim (whitespace-normalized) in that source file."
+}

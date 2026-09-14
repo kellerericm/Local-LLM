@@ -63,6 +63,11 @@
 				switch the active model, applying that model's recommended presets
 				optional HF token for gated models
 				option to save a pre-quantized copy
-		Phase 3: long-term tasks. Persisted job queue with checkpoint/resume, background hours, notes → report workflow, auto-research loop.
+		Phase 3: long-term tasks ("jobs"). Design draft for review: docs/design/phase3_long_running_tasks.md.
+			The coordinator owns the structure (persistent job, plan tree, checkpoints, budgets, scheduler); the model does bounded steps in fresh task-scoped contexts.
+			Memory lives outside the model: notes with verbatim quotes + SQLite FTS5 search, journal, artifacts, markdown mirrors in <workspace>/jobs/.
+			"Done" is decided by machine checks, then a fresh-context reviewer, then user gates.
+			Templates: research_report, auto_research, generic. Build order 3a–3d.
+			Test workloads in sandbox/ (lake_veyra corpus with answer key; tune_me optimization toy).
 		Phase 4: specialist models. Dataset building from transcripts/notes, LoRA/QLoRA with peft, distillation, eval gate on bench/, adapter registry with hot-swap.
 		Phase 5: longer-term memory research (open_questions.md).

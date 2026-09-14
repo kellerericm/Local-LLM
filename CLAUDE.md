@@ -68,6 +68,7 @@
 			Memory lives outside the model: notes with verbatim quotes + SQLite FTS5 search, journal, artifacts, markdown mirrors in <workspace>/jobs/.
 			"Done" is decided by machine checks, then a fresh-context reviewer, then user gates.
 			Templates: research_report, auto_research, generic. Build order 3a–3d.
+			Decided: plan approval required before start; visible jobs/ folders each with a README; txt/md preferred, PDF/DOCX ingestion on request (ships with research_report); reports in md (functional) or docx (formal); default budget 4 h / 400 steps with an Indefinite option; auto-research requires a code-made data split, default 80/20 train/test, and any other split needs user input. Chats interrupt jobs at the end of the job's current model step (job auto-resumes); Stop halts a job immediately; Pause/Resume available.
 			Test workloads in sandbox/ (lake_veyra corpus with answer key; tune_me optimization toy).
 		Phase 4: specialist models. Dataset building from transcripts/notes, LoRA/QLoRA with peft, distillation, eval gate on bench/, adapter registry with hot-swap.
 		Phase 5: longer-term memory research (open_questions.md).

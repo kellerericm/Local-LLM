@@ -1,6 +1,6 @@
 # Phase 3 design: long-running tasks ("jobs")
 
-Status: **draft for review** · 2026-09-14
+Status: **approved, all decisions made (§14)** · 2026-09-14
 Related: CLAUDE.md (Design), open_questions.md, experiments.md (probe results), `sandbox/` (test workloads)
 
 ## 1. Problem
@@ -105,7 +105,11 @@ Transcripts are kept for audit, debugging, and Phase 4 training data, but never 
 
 ### 3.4 Scheduler
 A single `JobRunner` thread in the server:
-- **One model, one step at a time.** Interactive chats preempt jobs *between model steps*. A job never makes you wait more than one generation (~seconds to a minute) for a chat reply.
+- **One model, one step at a time.** Interactive chats preempt jobs *between model steps* (decision 5): a chat message waits at most for the job's current generation and tool call (~10 s–1 min), then the job pauses, the chat is answered, and the job resumes automatically.
+- **Controls:**
+  - **Stop** cancels the job's current generation and kills its running command immediately. The job keeps its checkpoints and can be resumed later.
+  - **Pause** waits for the next break point.
+  - **Resume** continues from the last checkpoint.
 - **Task choice:** picks the next ready leaf by depth-first order within a job and round-robin across running jobs.
 - **Resource rules:** respects background hours, the GPU-busy pause (already token-level), and idle unload. Jobs keep the model loaded only while running.
 - **Budgets:** checked before each step. A job about to exceed one finishes its current task, then writes a progress report and pauses.
@@ -123,6 +127,7 @@ The database is the source of truth. Human-readable mirrors are written into the
 
 ```
 <workspace>/jobs/<job-slug>/
+  README.md       what this folder is, what each part holds, what's safe to edit (generated at creation)
   job.md          goal, status, budget used, links (regenerated)
   plan.md         the plan tree with statuses (regenerated)
   journal.md      append-only timeline: tasks, decisions, replans, user input, failures
@@ -181,9 +186,7 @@ Revised after probes P4 and P4b (§13):
 **Inputs:**
 - target file(s) and allowed files, libraries, and time per run
 - **optimization evaluator:** a command that prints a metric, plus which direction is better
-- **validation evaluator (required):** a separate check the proposing agent can't see or run.
-  - Examples: held-out data, a different test set, extrapolation cases, physical sanity limits, or tests.
-  - If the user has none, the template helps create one at setup, e.g. reserving a random 20% of the data. That split is done by code, not the model.
+- **held-out evaluation (required):** by default a code-made 80/20 train/test split; see §6.2.1 for the roles and the options that need user input.
 - stopping rule: budget, a target validation metric, or a plateau (N rounds with no validation improvement)
 
 **Loop (code-driven; the model works inside step 2 only):**
@@ -209,6 +212,19 @@ Revised after probes P4 and P4b (§13):
    - **Overfitting warning:** a large gap between optimization and validation scores is flagged in the log and fed into the next proposal.
 5. **Reflect.** Every K rounds, a fresh-context summary of what has and hasn't worked goes at the head of the log. This keeps the prompt small.
 6. **Stop** on the stopping rule. The model writes a final report: best result on both metrics, what mattered, what didn't, and the overfitting risk. The user reviews a diff before anything is copied back.
+
+#### 6.2.1 Data splits (decision 7)
+The split is done **by code at job setup**, seeded and recorded in the job, never by the model.
+- **Default: 80/20 train/test.**
+  - *Train (80%)* is the only data in the agent's working copy. Its evaluator scores against train.
+  - *Test (20%)* stays outside the working copy. The coordinator scores every candidate on it, and keep/revert is decided on test.
+- **Train/validation/test**, e.g. 70/15/15, is a user choice.
+  - *Validation* takes over the per-round keep/revert decisions.
+  - *Test* is scored **once**, at the end, for an honest final number.
+  - Why it matters: hundreds of keep/revert rounds against the same held-out set slowly tune to that set too. The final report says so when a two-way split ran many rounds. When a job is set to **Indefinite** or more than ~50 rounds, the setup screen *suggests* three-way, but the default stays 80/20.
+- **Any deviation requires user input:** other ratios, three-way, or a time-ordered split instead of random (needed when rows are a time series, where random splitting leaks the future into training).
+- **Non-tabular targets** (a script with test cases, a schematic with simulation cases): the same roles apply to *cases* instead of rows. If there's nothing to split automatically, the user provides the held-out cases, or explicitly marks the job "no held-out check", which is recorded and shown in the report.
+- **Reports** always show train and test scores side by side, and validation when used. A large train–test gap is flagged as overfitting.
 
 Evidence for the validation requirement (P4b): the agent reached 0.327 on the visible data (floor 0.29) with a degree-5 polynomial. On hidden data it scored 0.37 inside the range but **15.6 on extrapolation, 5× worse than the untouched baseline line (2.95)**. The true function scores 0.31 on both.
 
@@ -309,7 +325,18 @@ Script: `bench/probes/phase3_capabilities.py`. Raw results: `D:\LocalAgent\bench
 
 **Speed note:** Qwen3.5-9B's linear-attention layers are running on slow reference kernels. Missing `flash-linear-attention` / `causal_conv1d` is tracked in open_questions.md; fixing it would shorten every job.
 
-## 14. Decisions needed from you
+## 14. Decisions (2026-09-14)
+| # | Topic | Decision |
+|---|---|---|
+| 1 | Plan approval | **Required before a job starts** |
+| 2 | Job files | **Visible `<workspace>/jobs/<job-slug>/`**, each with an auto-generated `README.md` explaining what the folder is (the job it belongs to, what each file/subfolder holds, that it's managed by LocalAgent, and which files are safe to edit) |
+| 3 | Document formats | **txt/md preferred**; PDF/DOCX ingestion when requested. It's part of the research use case, so the extractors ship with `research_report` (moved from 3d into 3b) |
+| 4 | Report output | **Markdown for functional reports, DOCX for formal ones**, chosen per job |
+| 5 | Chat vs. job priority | **Break point = end of the current model step.** A chat message sent while a job runs is answered when the job finishes its current step (one generation + its tool call, typically 10 s–1 min). The job then resumes on its own, losing nothing because it checkpoints after every step. **Stop** halts a job immediately, mid-generation or mid-command. **Pause/Resume** is also available. Chats can answer questions about running jobs from their journal ("how's the report going?") |
+| 6 | Budgets | **Default 4 hours / 400 model steps**, with an **Indefinite** option available from the start. Local compute is free, so long-lived jobs are a goal. Indefinite jobs still stop and report on "no progress over 3 replans", so they can't spin forever |
+| 7 | Auto-research validation | **Required data split, default 80/20 train/test.** Any other split (e.g. 70/15/15 train/validation/test, other ratios, time-ordered splits) requires the user to choose it explicitly. See §6.2.1 |
+
+## Original decision list
 1. **Plan approval:** required before a job starts (recommended), or just shown while the job starts right away?
 2. **Job files:** visible `jobs/` folder in the workspace (recommended, human-legible), or hidden under `.agent/`?
 3. **Document formats for 3b:** txt/md first, then PDF and DOCX in 3d (recommended)? Anything else you rely on, e.g. scanned PDFs needing OCR, HTML, spreadsheets?

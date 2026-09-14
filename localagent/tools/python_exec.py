@@ -16,7 +16,26 @@ def python_exe(env_path: Path) -> Path:
     return Path("python")
 
 
+def repair_escaped_code(code: str) -> str:
+    """Models sometimes double-escape newlines, sending one line of 'import x\\nprint(y)'. If the code
+    doesn't compile as-is but does once literal \\n/\\t become real ones, use the repaired version."""
+    if "\n" in code.strip() or "\\n" not in code:
+        return code
+    try:
+        compile(code, "<snippet>", "exec")
+        return code
+    except SyntaxError:
+        pass
+    fixed = code.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+    try:
+        compile(fixed, "<snippet>", "exec")
+        return fixed
+    except SyntaxError:
+        return code
+
+
 def run_python(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
+    code = repair_escaped_code(code)
     decision = ctx.policy.evaluate_python(code, ctx.guard)
     if decision.action == "deny":
         return ToolResult(f"Blocked by policy ({decision.summary}).", ok=False, denied=True)

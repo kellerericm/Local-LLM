@@ -57,7 +57,7 @@ These are **always blocked**, with no approval possible: registry edits, permane
 Open **Settings** at the bottom of the sidebar.
 
 **Model**
-- *Model:* a Hugging Face model id (e.g. `Qwen/Qwen3-8B`) or a local folder. Changing it reloads the model on the next message.
+- *Model:* a Hugging Face model id (e.g. `Qwen/Qwen3.5-9B`, the default) or a local folder. Changing it reloads the model on the next message.
 - *Quantization:* `4bit` uses the least VRAM, `8bit` is a middle ground, `none` is full precision and needs far more VRAM.
 - *Models folder:* where downloads are cached.
 - *Default Python environment:* where `python`/`pip` point for the agent. Projects can override it.

@@ -57,10 +57,11 @@ Stop the server with **Ctrl+C**.
 ```powershell
 python -m localagent
 ```
-- The first message you send downloads the model set in Settings. The default is `Qwen/Qwen3-8B`, about 16 GB. Then it loads (about a minute), and later messages are quick.
+- The first message you send downloads the model set in Settings. The default is `Qwen/Qwen3.5-9B`, about 19 GB, chosen by benchmark (see `experiments.md`). Then it loads (about a minute), and later messages are quick.
+- While loading, 4-bit quantization briefly uses about 19 GB of system RAM. Close memory-heavy apps first, or pick the pre-quantized `unsloth/Qwen3-14B-bnb-4bit` in Settings, which avoids the spike.
 - To download ahead of time:
   ```powershell
-  python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3-8B', cache_dir=r'D:\LocalAgent\models')"
+  python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3.5-9B', cache_dir=r'D:\LocalAgent\models')"
   ```
 - To pick a model based on evidence, see `experiments.md` and run the benchmark (step 9).
 

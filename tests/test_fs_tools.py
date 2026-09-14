@@ -46,6 +46,14 @@ def test_grep_no_match_hint(ctx):
     assert "without file_glob" in out
 
 
+def test_repair_double_escaped_python():
+    from localagent.tools.python_exec import repair_escaped_code
+    broken = "import csv\\n\\ncount = 0\\nfor i in range(3):\\n    count += 1\\nprint(count)"
+    assert repair_escaped_code(broken) == "import csv\n\ncount = 0\nfor i in range(3):\n    count += 1\nprint(count)"
+    ok = "print('a\\nb')"          # a legitimate escape inside a string must be left alone
+    assert repair_escaped_code(ok) == ok
+
+
 def test_glob_tool_path_pattern(ctx):
     out = glob_files(ctx, "app/**/*.py").content
     assert "app/main.py" in out and "app/db/models.py" in out

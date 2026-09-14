@@ -29,7 +29,7 @@ class ResourceSettings:
 class Settings:
     models_dir: str = r"D:\LocalAgent\models"
     env_path: str = sys.prefix
-    model_id: str = "Qwen/Qwen3-8B"
+    model_id: str = "Qwen/Qwen3.5-9B"          # chosen by benchmark, see experiments.md
     quantization: str = "4bit"           # none | 8bit | 4bit
     tool_call_format: str = "auto"          # auto | hermes | qwen3_coder
     thinking: bool = True

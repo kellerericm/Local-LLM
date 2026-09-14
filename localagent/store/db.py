@@ -92,7 +92,8 @@ class Store:
 
     def _migrate(self) -> None:
         """Add columns introduced after a database was created."""
-        added = {"chats": [("gen_overrides", "TEXT")], "messages": [("usage", "TEXT")]}
+        added = {"chats": [("gen_overrides", "TEXT")], "messages": [("usage", "TEXT")],
+                 "approvals": [("job_id", "TEXT")]}
         for table, columns in added.items():
             existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
             for name, sql_type in columns:
@@ -232,11 +233,12 @@ class Store:
         return json.loads(row["items"]) if row else []
 
     # -- approvals ---------------------------------------------------------
-    def create_approval(self, chat_id: str | None, scope: str, keys: list[str], summary: str, detail: str) -> dict:
+    def create_approval(self, chat_id: str | None, scope: str, keys: list[str], summary: str, detail: str,
+                        job_id: str | None = None) -> dict:
         aid = uuid.uuid4().hex[:12]
-        self._exec("INSERT INTO approvals(id,chat_id,scope,keys,summary,detail,status,created_at)"
-                   " VALUES(?,?,?,?,?,?,'pending',?)",
-                   (aid, chat_id, scope, json.dumps(keys), summary, detail, time.time()))
+        self._exec("INSERT INTO approvals(id,chat_id,job_id,scope,keys,summary,detail,status,created_at)"
+                   " VALUES(?,?,?,?,?,?,?,'pending',?)",
+                   (aid, chat_id, job_id, scope, json.dumps(keys), summary, detail, time.time()))
         return self.get_approval(aid)
 
     def get_approval(self, approval_id: str) -> dict | None:

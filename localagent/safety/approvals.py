@@ -20,14 +20,14 @@ class ApprovalBroker:
         self._lock = threading.Lock()
 
     def request(self, chat_id: str | None, scope: str, keys: list[str], summary: str, detail: str,
-                cancel: threading.Event | None = None) -> bool:
+                cancel: threading.Event | None = None, job_id: str | None = None) -> bool:
         if keys and all(self.store.has_rule(scope, k) for k in keys):
             return True
-        approval = self.store.create_approval(chat_id, scope, keys, summary, detail)
+        approval = self.store.create_approval(chat_id, scope, keys, summary, detail, job_id=job_id)
         event, box = threading.Event(), []
         with self._lock:
             self._waiters[approval["id"]] = (event, box)
-        self.emit({"type": "approval_request", "chat_id": chat_id, "approval": approval})
+        self.emit({"type": "approval_request", "chat_id": chat_id, "job_id": job_id, "approval": approval})
         try:
             while not event.wait(0.25):
                 if cancel is not None and cancel.is_set():
@@ -72,8 +72,9 @@ class AutoApprover:
         self.allow = allow
         self.requests: list[dict] = []
 
-    def request(self, chat_id, scope, keys, summary, detail, cancel=None) -> bool:
-        self.requests.append({"chat_id": chat_id, "scope": scope, "keys": keys, "summary": summary, "detail": detail})
+    def request(self, chat_id, scope, keys, summary, detail, cancel=None, job_id=None) -> bool:
+        self.requests.append({"chat_id": chat_id, "scope": scope, "keys": keys, "summary": summary, "detail": detail,
+                              "job_id": job_id})
         return self.allow
 
     def pending(self) -> list[dict]:

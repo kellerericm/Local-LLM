@@ -9,6 +9,8 @@ from pathlib import Path
 from ..backend.worker import WorkerBackend
 from ..config import Settings, save_settings
 from ..coordinator import Coordinator
+from ..jobs.models import JobStore
+from ..jobs.runner import JobRunner
 from ..resources import ResourceManager
 from ..safety import ApprovalBroker
 from ..store import Store
@@ -107,6 +109,9 @@ class Runtime:
         self.coordinator = Coordinator(self.backend, self.store, self.registry, self.approvals, self.get_settings,
                                        self.bus.publish, self.resources)
         self.runs = RunManager(self.coordinator)
+        self.jobs = JobStore(self.store)
+        self.job_runner = JobRunner(self.jobs, self.store, self.coordinator, self.get_settings, self.bus.publish,
+                                    self.approvals, chat_runs=self.runs)
 
     def get_settings(self) -> Settings:
         return self.settings
@@ -125,11 +130,14 @@ class Runtime:
         self.bus.publish({"type": "settings", "settings": new.to_dict()})
         return new
 
-    def start(self) -> None:
+    def start(self, run_jobs: bool = True) -> None:
         self.resources.start()
+        if run_jobs:
+            self.job_runner.start()
 
     def shutdown(self) -> None:
         self.runs.cancel_all()
+        self.job_runner.stop()
         self.resources.stop()
         try:
             self.backend.unload(force=True)

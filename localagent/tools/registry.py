@@ -29,7 +29,7 @@ class ToolResult:
 
 @dataclass
 class ToolContext:
-    chat_id: str
+    chat_id: str | None             # None for job task sessions
     project: dict | None
     workspace: Path
     env_path: Path
@@ -41,6 +41,7 @@ class ToolContext:
     cancel: threading.Event
     emit: Callable[[dict], None]
     awaiting_approval: bool = False  # tool timeouts don't count time spent waiting on the user
+    conversation: Any = None         # the Conversation this call belongs to (chat or job task)
 
     @property
     def scope(self) -> str:

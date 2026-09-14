@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from ..backend.model_profiles import GEN_KEYS, LIMITS, PARAM_DOCS, profile_for, validate_generation
 from ..config import Settings
 from ..safety.paths import normalize
+from . import routes_jobs
 from .runtime import Runtime
 from .titles import make_title
 
@@ -63,18 +64,19 @@ def _validate_env(env_path: str | None) -> None:
         raise HTTPException(400, f"No Python interpreter found in environment folder: {env_path}")
 
 
-def create_app(settings: Settings, backend=None) -> FastAPI:
+def create_app(settings: Settings, backend=None, run_jobs: bool = True) -> FastAPI:
     rt = Runtime(settings, backend)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         rt.bus.bind(asyncio.get_running_loop())
-        rt.start()
+        rt.start(run_jobs=run_jobs)
         yield
         await asyncio.to_thread(rt.shutdown)
 
     app = FastAPI(title="LocalAgent", lifespan=lifespan)
     app.state.runtime = rt
+    routes_jobs.register(app, rt)
 
     @app.middleware("http")
     async def no_stale_ui(request, call_next):
@@ -87,6 +89,8 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
     @app.get("/api/state")
     def state():
         return {"projects": rt.store.list_projects(), "chats": rt.store.list_chats(),
+                "jobs": [{k: j[k] for k in ("id", "project_id", "title", "status", "status_reason", "updated_at")}
+                         for j in rt.jobs.list_jobs()],
                 "running": rt.runs.running(), "pending_approvals": rt.approvals.pending(),
                 "toolsets": rt.registry.toolsets()}
 
@@ -129,7 +133,10 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         chats = [c["id"] for c in rt.store.list_chats() if c["project_id"] == project_id]
         if any(c in rt.runs.running() for c in chats):
             raise HTTPException(409, "Stop the project's running chats first.")
-        rt.store.delete_project(project_id)      # removes its chats; never touches files on disk
+        for job in rt.jobs.list_jobs(project_id):
+            if job["status"] in ("planning", "running", "waiting_user"):
+                rt.job_runner.cancel_job(job["id"])
+        rt.store.delete_project(project_id)      # removes its chats and jobs; never touches files on disk
         rt.bus.publish({"type": "state_changed"})
         return {"ok": True}
 

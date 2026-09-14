@@ -63,7 +63,15 @@
 				switch the active model, applying that model's recommended presets
 				optional HF token for gated models
 				option to save a pre-quantized copy
-		Phase 3: long-term tasks ("jobs"). Design draft for review: docs/design/phase3_long_running_tasks.md.
+		Phase 3a (implemented 2026-09-14, `localagent/jobs/`): generic jobs.
+			Coordinator refactored over a Conversation interface, so chats and job sessions share one agent loop.
+			Planning sessions: read-only tools + propose_plan, with plan lint rejecting uncheckable done_when.
+			Task sessions: fresh context, complete_task/fail_task/ask_user.
+			Machine checks: file_exists, file_contains, json_valid, command_ok.
+			JobRunner: plan approval gate, retries with failure guidance, per-task questions, budgets incl. indefinite, Pause at break points, immediate Stop, chat preemption at step boundaries, restart recovery, pre-approved job permissions.
+			Mirrors in <workspace>/jobs/<slug>/ (README, job, plan, journal). Job API (server/routes_jobs.py) and UI (web/jobs.js).
+			Not yet: model-driven replanning after exhausted attempts (user retries/skips instead), notes/FTS, reviewer pass, templates (3b–3d).
+		Phase 3: long-term tasks ("jobs"). Design (approved): docs/design/phase3_long_running_tasks.md.
 			The coordinator owns the structure (persistent job, plan tree, checkpoints, budgets, scheduler); the model does bounded steps in fresh task-scoped contexts.
 			Memory lives outside the model: notes with verbatim quotes + SQLite FTS5 search, journal, artifacts, markdown mirrors in <workspace>/jobs/.
 			"Done" is decided by machine checks, then a fresh-context reviewer, then user gates.

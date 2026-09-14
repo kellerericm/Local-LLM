@@ -142,6 +142,58 @@ details.advanced summary { cursor: pointer; color: var(--muted); margin-bottom: 
 .field input:disabled { opacity: .5; }
 .field a { color: var(--accent); }
 
+/* Jobs */
+.jobs-head { display: flex; align-items: center; justify-content: space-between; margin-left: 26px; padding: 4px 4px 0 0; font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.icon-btn.small { font-size: 13px; padding: 0 6px; }
+.job-icon { width: 14px; text-align: center; flex: none; font-size: 11px; color: var(--muted); }
+.job-icon.attn { color: var(--warn); font-weight: 700; }
+.job-icon.ok { color: var(--accent); }
+.job-icon.bad { color: var(--danger); }
+#job-view { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+.job-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.job-header h1 { font-size: 16px; margin: 0; }
+.pill.ok { background: var(--accent-soft); color: var(--accent); }
+.job-body { max-width: 900px; width: 100%; margin: 0 auto; padding: 16px 24px 40px; display: grid; gap: 16px; }
+.section-label { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 6px; }
+.job-goal p { margin: 0; white-space: pre-wrap; }
+.job-reason { padding: 8px 12px; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent); }
+.job-reason.warn { background: var(--warn-soft); color: var(--warn); }
+.job-reason.bad { background: var(--danger-soft); color: var(--danger); }
+.job-activity { font-size: 12.5px; color: var(--muted); font-family: var(--mono); }
+.job-activity::before { content: "● "; color: var(--accent); animation: pulse 1.2s infinite; }
+.job-budget { display: grid; grid-template-columns: auto 120px auto auto 120px auto; gap: 6px 10px; align-items: center; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.job-budget .bar { height: 6px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.job-budget .fill { display: block; height: 100%; background: var(--accent); }
+.job-questions .ask textarea { width: 100%; margin-top: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.plan-tree { list-style: none; margin: 0; padding-left: 0; }
+.plan-tree .plan-tree { padding-left: 20px; }
+.plan-row { display: flex; gap: 8px; align-items: baseline; padding: 5px 8px; border-radius: 7px; cursor: pointer; }
+.plan-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.plan-row.group { cursor: default; font-weight: 600; }
+.plan-row.group:hover { background: none; }
+.tkey { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.ticon { width: 14px; text-align: center; flex: none; }
+.ttitle { flex: 1; }
+.attempts { font-size: 11.5px; color: var(--warn); font-variant-numeric: tabular-nums; }
+.plan-leaf.done .ticon { color: var(--accent); }
+.plan-leaf.running .ticon { color: var(--accent); animation: pulse 1.2s infinite; }
+.plan-leaf.failed .ticon, .plan-leaf.failed .ttitle { color: var(--danger); }
+.plan-leaf.waiting_user .ticon { color: var(--warn); font-weight: 700; }
+.plan-leaf.skipped .ttitle { color: var(--muted); text-decoration: line-through; }
+.task-details { margin: 2px 0 10px 30px; padding: 10px 12px; border-left: 2px solid var(--line); display: grid; gap: 6px; font-size: 13px; }
+.td-row { display: grid; grid-template-columns: 150px 1fr; gap: 10px; }
+.td-row ul { margin: 0; padding-left: 18px; }
+.td-label { color: var(--muted); }
+.guidance { white-space: pre-wrap; }
+.runs li { margin-bottom: 4px; }
+.job-journal summary { cursor: pointer; color: var(--muted); }
+.job-journal ol { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 4px; font-size: 12.5px; }
+.job-journal li { display: flex; gap: 8px; }
+.job-journal time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.transcript { max-height: 60vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
+.perm-list { display: grid; gap: 4px; }
+@media (max-width: 900px) { .td-row { grid-template-columns: 1fr; } .job-budget { grid-template-columns: auto 1fr auto; } }
+
 /* Tasks */
 #tasks-panel { width: 280px; border-left: 1px solid var(--line); padding: 14px 14px; overflow-y: auto; background: var(--bg); }
 #tasks { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 6px; }

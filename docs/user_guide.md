@@ -32,6 +32,48 @@ LocalAgent is an AI agent that runs entirely on your computer. You give it tasks
 
 **When things go wrong:** that's expected, and fine. Errors are fed back to the agent so it can try something else. If several attempts in a row fail, it stops and tells you what it tried and what it needs, instead of spinning. It can also ask you questions directly (a yellow *Question for you* box). Just reply in the chat.
 
+## Jobs (long-running tasks)
+
+**What they're for:** work that takes longer than one sitting. A job might read a folder of documents and write a report, or run experiments to improve a script for hours. It works in the background while you do other things, including chatting.
+
+**How a job works**
+1. **Create it.** In a project's sidebar section, click the **＋** next to *Jobs*. Give it:
+   - a **title** and a **goal**: describe the outcome, where the inputs are, and what the result should look like
+   - a **budget**: time and model steps, or *No limit*
+   - a **schedule**: run whenever possible, or only during background hours
+   - optional **pre-approvals**: e.g. allow network access for this job, so it doesn't stall waiting on you while unattended
+2. **The agent plans.** It looks around the workspace and writes a plan: a tree of small tasks, each with a concrete *done when* condition and, where possible, automatic checks such as "report.md exists" or "tests pass".
+3. **You review the plan.** Nothing runs until you click **Approve plan & start**. Use **Request changes** to describe what's wrong; the agent re-plans and you review again.
+4. **It works through the tasks.** Each task runs with a fresh, focused context: the goal, the plan outline, its own instructions, and the results of earlier tasks. It passes results on through files and short summaries. When a task says it's done, its checks run. If they fail, the task is retried with the failure details, up to 3 attempts.
+5. **It finishes,** or stops and tells you why.
+
+**Your controls**
+- **Pause:** finishes the current step (usually under a minute), then pauses.
+- **Stop:** halts immediately, even mid-step. Progress is kept.
+- **Resume:** continues from where it stopped.
+- **Chatting while a job runs:** your chat is answered after the job's current step. The job then continues on its own.
+- **Budget reached:** the job pauses and says so. Raise the budget or choose *No limit* (⋯ → *Edit budget & permissions*), then resume.
+
+**When it needs you**
+- **Questions:** appear in the job view under *Questions for you*. Only the asking task waits; the rest of the job keeps going.
+- **Approvals** for things not pre-approved pop up as usual, labelled with the job's name.
+- **A task that fails all its attempts** pauses the job with *Needs your decision*. Open the task to see what happened (including full transcripts of each attempt), then **Retry** or **Skip** it. Retry after, for example, fixing a missing file or answering the underlying question.
+
+**What you see in the job view**
+- **Status and reason:** e.g. "Plan ready: needs your approval".
+- **A live activity line:** "Running run_shell: python evaluate.py".
+- **Budget bars.**
+- **The plan tree.** Click a task for its instructions, *done when*, checks, results, notes carried between attempts, and transcripts.
+- **The journal:** a timeline of what happened and why.
+
+**Files it creates.** Every job gets a folder at `<workspace>/jobs/<job-name>/`:
+- `README.md` explains what the folder is.
+- `job.md`, `plan.md`, and `journal.md` are readable copies of the job's status, plan, and timeline, kept up to date.
+
+The actual work lands in the workspace itself. Deleting a job in the app never deletes files.
+
+**Surviving restarts.** Jobs are saved after every step. If the app closes or the computer restarts mid-task, the job picks up when LocalAgent starts again: the interrupted task reruns with a note about what it had already done.
+
 ## Approvals and safety
 
 **What they're for:** the agent works freely inside its workspace, but you decide about anything beyond that.
@@ -118,4 +160,4 @@ The status lines at the bottom of the sidebar show whether the model is loaded a
 | Benchmark results | `D:\LocalAgent\bench-runs` |
 
 ## Not in this version yet
-Archiving chats (with compression), downloading and managing models from Hugging Face inside the app, MCP servers/plugins per project, a native desktop window, long-running background tasks, and fine-tuning/LoRA specialists. See the plan in `CLAUDE.md`.
+Archiving chats (with compression), downloading and managing models from Hugging Face inside the app, MCP servers/plugins per project, and a native desktop window. For jobs: research-report and auto-research templates (notes with citations, reviewer checks, train/test splits), starting jobs from a chat, and PDF/DOCX reading. Also fine-tuning/LoRA specialists. See the plan in `CLAUDE.md`.

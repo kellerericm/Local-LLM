@@ -73,6 +73,8 @@ const S = {
   chatState: {},          // chat_id -> {state, outcome}
   approvals: new Map(),   // id -> approval
   currentChatId: store.get("currentChatId", null),
+  jobs: [],
+  currentJobId: store.get("currentJobId", null),
   messages: [],
   tasks: [],
   collapsed: store.get("collapsedProjects", {}),
@@ -111,6 +113,7 @@ function renderSidebar() {
   const wrap = $("#projects");
   wrap.replaceChildren(...S.projects.map((p) => {
     const chats = S.chats.filter((c) => c.project_id === p.id);
+    const jobs = S.jobs.filter((j) => j.project_id === p.id);
     const collapsed = !!S.collapsed[p.id];
     return h("div", { class: "project" },
       h("div", { class: "project-head", title: p.workspace_path, onclick: () => { S.collapsed[p.id] = !collapsed; store.set("collapsedProjects", S.collapsed); renderSidebar(); } },
@@ -118,7 +121,11 @@ function renderSidebar() {
         h("span", { class: "name" }, p.name),
         h("button", { class: "icon-btn", title: "New chat in project", onclick: (e) => { e.stopPropagation(); newChat(p.id); } }, "＋"),
         h("button", { class: "icon-btn", title: "Project settings", onclick: (e) => { e.stopPropagation(); projectDialog(p); } }, "⋯")),
-      collapsed ? null : chats.length ? h("ul", { class: "chat-list" }, chats.map(chatItem)) : h("div", { class: "empty-note" }, "No chats"));
+      collapsed ? null : chats.length ? h("ul", { class: "chat-list" }, chats.map(chatItem)) : h("div", { class: "empty-note" }, "No chats"),
+      collapsed ? null : h("div", { class: "jobs-head" },
+        h("span", {}, "Jobs"),
+        h("button", { class: "icon-btn small", title: "New long-running job", onclick: (e) => { e.stopPropagation(); newJobDialog(p); } }, "＋")),
+      collapsed || !jobs.length ? null : h("ul", { class: "chat-list" }, jobs.map(jobItem)));
   }));
   if (!S.projects.length) wrap.append(h("div", { class: "muted", style: "padding:4px 8px;font-size:12px" }, "No projects yet"));
 }
@@ -130,6 +137,8 @@ async function refreshState() {
   S.toolsets = st.toolsets;
   S.running = new Set(st.running);
   S.approvals = new Map(st.pending_approvals.map((a) => [a.id, a]));
+  S.jobs = st.jobs || [];
+  if (S.currentJobId && !S.jobs.some((j) => j.id === S.currentJobId)) closeJobView();
   if (S.currentChatId && !S.chats.some((c) => c.id === S.currentChatId)) {
     S.currentChatId = null;
     store.set("currentChatId", null);
@@ -142,6 +151,7 @@ async function refreshState() {
 
 // ---------- chat view ----------
 async function selectChat(id) {
+  closeJobView();
   S.currentChatId = id;
   store.set("currentChatId", id);
   removeStream();
@@ -304,6 +314,11 @@ function renderTasks() {
 
 // ---------- events ----------
 function handleEvent(ev) {
+  // Job events (and job-session activity) are handled by jobs.js; approvals are shared.
+  if (ev.type === "job" || ev.type === "job_activity" || (ev.job_id && !ev.chat_id && !ev.type.startsWith("approval"))) {
+    handleJobEvent(ev);
+    return;
+  }
   const isCurrent = ev.chat_id && ev.chat_id === S.currentChatId;
   switch (ev.type) {
     case "state_changed":
@@ -377,7 +392,8 @@ function connect() {
   ws.onopen = async () => {
     wsDelay = 500;
     await refreshState();
-    if (S.currentChatId) await selectChat(S.currentChatId);
+    if (S.currentJobId && S.jobs.some((j) => j.id === S.currentJobId)) await selectJob(S.currentJobId);
+    else if (S.currentChatId) await selectChat(S.currentChatId);
     refreshStatus();
   };
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
@@ -493,7 +509,8 @@ function showNextApproval() {
   if (!approval) return;
   S.shownApproval = approval.id;
   const chat = S.chats.find((c) => c.id === approval.chat_id);
-  const project = chat && S.projects.find((p) => p.id === chat.project_id);
+  const job = approval.job_id && S.jobs.find((j) => j.id === approval.job_id);
+  const project = S.projects.find((p) => p.id === (chat ? chat.project_id : job ? job.project_id : null));
   const decide = async (decision) => {
     try { await api("POST", `/api/approvals/${approval.id}`, { decision }); }
     catch (e) { toast(e.message); }
@@ -505,10 +522,11 @@ function showNextApproval() {
   };
   openModal(
     h("h3", {}, `Approval needed: ${approval.summary}`),
-    h("div", { class: "approval-meta" }, `Chat: ${chat ? chat.title : "unknown"} · ${project ? `Project: ${project.name}` : "General chats"}`),
+    h("div", { class: "approval-meta" }, `${job ? `Job: ${job.title}` : `Chat: ${chat ? chat.title : "unknown"}`} · ${project ? `Project: ${project.name}` : "General chats"}`),
     h("pre", { class: "approval-detail" }, approval.detail),
     h("div", { class: "modal-actions" },
       chat && chat.id !== S.currentChatId ? h("button", { type: "button", class: "btn ghost", onclick: () => selectChat(chat.id) }, "Go to chat") : null,
+      job && job.id !== S.currentJobId ? h("button", { type: "button", class: "btn ghost", onclick: () => selectJob(job.id) }, "Go to job") : null,
       h("span", { class: "spacer" }),
       h("button", { type: "button", class: "btn danger", onclick: () => decide("deny") }, "Deny"),
       h("button", { type: "button", class: "btn", title: approval.keys.join("\n"), onclick: () => decide("always") }, project ? "Always allow in this project" : "Always allow in general chats"),

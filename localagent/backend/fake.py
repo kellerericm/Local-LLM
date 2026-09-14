@@ -58,11 +58,20 @@ class EchoBackend:
                 said = last["content"] if last else ""
                 text = (f"<think>The user said something; I'm a fake model.</think>(fake model) You said: {said}\n\n"
                         "Try `/ls`, `/tasks`, or `/outside` to exercise tools and approvals.")
+            started = time.time()
             for i in range(0, len(text), 6):
                 if cancel is not None and cancel.is_set():
                     return
                 time.sleep(0.01)
                 yield text[i:i + 6]
+            # Rough stand-in numbers so the UI's usage display can be exercised without a GPU.
+            thinking_tokens = len(text.split("</think>")[0]) // 4 if "</think>" in text else 0
+            total = len(text) // 4
+            elapsed = max(time.time() - started, 0.01)
+            yield {"usage": {"prompt_tokens": sum(len(str(m.get("content") or "")) for m in messages) // 4,
+                             "completion_tokens": total, "thinking_tokens": thinking_tokens,
+                             "answer_tokens": total - thinking_tokens, "seconds": round(elapsed, 2),
+                             "tokens_per_s": round(total / elapsed, 1), "thinking_budget_hit": False}}
         finally:
             self._busy = False
             self.last_used = time.time()

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..backend.base import GenerationCancelled
+from ..backend.model_profiles import effective_generation
 from ..backend.toolcall_parsers import FORMAT_REMINDER, get_parser
 from ..safety.commands import CommandPolicy
 from ..safety.paths import PathGuard
@@ -80,7 +81,7 @@ class Coordinator:
                     self.resources.wait_until_clear(cancel, lambda s: self._status(chat_id, s))
                 ctx = self._context(chat_id, cancel)
                 tools = self.registry.available(ctx)
-                text = self._generate(chat_id, ctx, tools, cancel)
+                text, usage = self._generate(chat_id, ctx, tools, cancel)
                 if cancel.is_set():
                     if text.strip():
                         self._add(chat_id, "assistant", text.strip() + "\n\n[stopped by user]")
@@ -89,7 +90,7 @@ class Coordinator:
                 parsed = get_parser(settings.tool_call_format)(text, [t.schema() for t in tools])
                 calls = [{"id": f"call_{time.time_ns()}_{i}", **c} for i, c in enumerate(parsed.tool_calls)]
                 self._add(chat_id, "assistant", parsed.content, reasoning=parsed.reasoning or None,
-                          tool_calls=calls or None)
+                          tool_calls=calls or None, usage=usage)
 
                 if parsed.errors:
                     failures += 1
@@ -180,31 +181,38 @@ class Coordinator:
                            guard=PathGuard(workspace, env_path), policy=self.policy, approvals=self.approvals,
                            store=self.store, settings=settings, cancel=cancel, emit=self.emit)
 
-    def _build_messages(self, ctx: ToolContext, tools: list[dict] | None, extra: list[dict] = ()) -> list[dict]:
-        settings = ctx.settings
+    def _build_messages(self, ctx: ToolContext, tools: list[dict] | None, max_new_tokens: int,
+                        extra: list[dict] = ()) -> list[dict]:
         system = {"role": "system", "content": prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project)}
         history = to_model_messages(self.store.list_messages(ctx.chat_id)) + list(extra)
-        budget = settings.context_tokens - settings.max_new_tokens
+        budget = ctx.settings.context_tokens - max_new_tokens
         return fit_messages([system] + history, budget, tools)
 
     def _generate(self, chat_id: str, ctx: ToolContext, tools: list[Tool] | None, cancel: threading.Event,
-                  extra: list[dict] = ()) -> str:
+                  extra: list[dict] = ()) -> tuple[str, dict | None]:
+        """Returns the raw text and usage stats (None when the backend doesn't report them)."""
         settings = ctx.settings
+        chat = self.store.get_chat(chat_id) or {}
+        params = effective_generation(settings, chat.get("gen_overrides"))
         schemas = [t.schema() for t in tools] if tools else None
-        messages = self._build_messages(ctx, schemas, extra)
-        params = {"max_new_tokens": settings.max_new_tokens, "temperature": settings.temperature,
-                  "top_p": settings.top_p, "top_k": settings.top_k, "thinking": settings.thinking}
+        messages = self._build_messages(ctx, schemas, int(params["max_new_tokens"]), extra)
         parts: list[str] = []
+        usage = None
         self.emit({"type": "generation_start", "chat_id": chat_id})
         for chunk in self.backend.generate(messages, schemas, params, adapter=None, cancel=cancel,
                                            on_status=lambda s: self._status(chat_id, s)):
+            if isinstance(chunk, dict):
+                usage = {**chunk["usage"], "context_tokens": settings.context_tokens,
+                         "preset": params.get("preset"), "thinking": params.get("thinking")}
+                self.emit({"type": "usage", "chat_id": chat_id, "usage": usage})
+                continue
             parts.append(chunk)
             self.emit({"type": "token", "chat_id": chat_id, "text": chunk})
             if cancel.is_set():
                 break
         self.emit({"type": "generation_end", "chat_id": chat_id})
         self._status(chat_id, "running")
-        return "".join(parts)
+        return "".join(parts), usage
 
     def _execute(self, ctx: ToolContext, by_name: dict[str, Tool], call: dict, settings) -> ToolResult:
         tool = by_name.get(call["name"])
@@ -247,12 +255,12 @@ class Coordinator:
         self._add(chat_id, "user", note, kind="coordinator")
         ctx = self._context(chat_id, cancel)
         try:
-            text = self._generate(chat_id, ctx, None, cancel)
+            text, usage = self._generate(chat_id, ctx, None, cancel)
         except GenerationCancelled:
             return "cancelled"
         parsed = get_parser(settings.tool_call_format)(text)
         content = parsed.content or "(The agent stopped without a summary.)"
         if parsed.tool_calls:
             content += "\n\n[tool calls in this summary were ignored]"
-        self._add(chat_id, "assistant", content, reasoning=parsed.reasoning or None)
+        self._add(chat_id, "assistant", content, reasoning=parsed.reasoning or None, usage=usage)
         return outcome

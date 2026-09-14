@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS chats(
     project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    gen_overrides TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS messages(
     tool_call_id TEXT,
     name TEXT,
     ok INTEGER,
+    usage TEXT,
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
@@ -82,10 +84,20 @@ class Store:
         self._lock = threading.RLock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             # Approvals left pending by a previous run can never be answered.
             self._conn.execute(
                 "UPDATE approvals SET status='expired' WHERE status='pending'")
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was created."""
+        added = {"chats": [("gen_overrides", "TEXT")], "messages": [("usage", "TEXT")]}
+        for table, columns in added.items():
+            existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            for name, sql_type in columns:
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
     def close(self) -> None:
         with self._lock:
@@ -153,19 +165,26 @@ class Store:
                    (cid, project_id, title, now, now))
         return self.get_chat(cid)
 
+    @staticmethod
+    def _chat_out(row: dict | None) -> dict | None:
+        if row is not None:
+            row["gen_overrides"] = json.loads(row["gen_overrides"]) if row.get("gen_overrides") else {}
+        return row
+
     def get_chat(self, chat_id: str) -> dict | None:
-        return self._one("SELECT * FROM chats WHERE id=?", (chat_id,))
+        return self._chat_out(self._one("SELECT * FROM chats WHERE id=?", (chat_id,)))
 
     def list_chats(self, status: str = "active") -> list[dict]:
-        return self._all("SELECT * FROM chats WHERE status=? ORDER BY updated_at DESC", (status,))
+        return [self._chat_out(r) for r in
+                self._all("SELECT * FROM chats WHERE status=? ORDER BY updated_at DESC", (status,))]
 
     def update_chat(self, chat_id: str, **fields) -> dict | None:
-        allowed = {"title", "project_id", "status"}
+        allowed = {"title", "project_id", "status", "gen_overrides"}
         sets, params = [], []
         for k, v in fields.items():
             if k in allowed:
                 sets.append(f"{k}=?")
-                params.append(v)
+                params.append((json.dumps(v) if v else None) if k == "gen_overrides" else v)
         sets.append("updated_at=?")
         params.append(time.time())
         self._exec(f"UPDATE chats SET {','.join(sets)} WHERE id=?", (*params, chat_id))
@@ -181,6 +200,7 @@ class Store:
     @staticmethod
     def _message_out(row: dict) -> dict:
         row["tool_calls"] = json.loads(row["tool_calls"]) if row["tool_calls"] else None
+        row["usage"] = json.loads(row["usage"]) if row.get("usage") else None
         if row["ok"] is not None:
             row["ok"] = bool(row["ok"])
         return row
@@ -188,12 +208,12 @@ class Store:
     def add_message(self, chat_id: str, role: str, content: str | None = None, *, kind: str = "normal",
                     reasoning: str | None = None, tool_calls: list[dict] | None = None,
                     tool_call_id: str | None = None, name: str | None = None,
-                    ok: bool | None = None) -> dict:
+                    ok: bool | None = None, usage: dict | None = None) -> dict:
         cur = self._exec(
-            "INSERT INTO messages(chat_id,role,kind,content,reasoning,tool_calls,tool_call_id,name,ok,created_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO messages(chat_id,role,kind,content,reasoning,tool_calls,tool_call_id,name,ok,usage,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (chat_id, role, kind, content, reasoning, json.dumps(tool_calls) if tool_calls else None,
-             tool_call_id, name, None if ok is None else int(ok), time.time()))
+             tool_call_id, name, None if ok is None else int(ok), json.dumps(usage) if usage else None, time.time()))
         self.touch_chat(chat_id)
         return self._message_out(self._one("SELECT * FROM messages WHERE id=?", (cur.lastrowid,)))
 

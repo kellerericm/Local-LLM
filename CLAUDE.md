@@ -53,9 +53,16 @@
 			ApprovalBroker: once / always-for-this-project / deny, persisted rules.
 		Storage (`store/db.py`): SQLite with projects, chats (project_id NULL = general list), messages, per-chat task lists, approvals, and approval rules. Chats persist across restarts. Deleting a project removes its chats, never its files.
 		Resources (`resources/manager.py`): worker and child processes at below-normal priority; NVML-based pause when other processes load the GPU (with hysteresis); idle unload; user caps (VRAM, threads, background hours).
-	Benchmark: `python -m bench.run --model <id>` runs 10 agentic tasks (`bench/tasks.py`) with automatic checks. Default model chosen from it: Qwen/Qwen3.5-9B (10/10, fastest). Runner-up: unsloth/Qwen3-14B-bnb-4bit. See experiments.md.
+	Benchmark: `python -m bench.run --model <id>` runs 10 agentic tasks (`bench/tasks.py`) with automatic checks. Default model chosen from it: Qwen/Qwen3.5-9B (10/10, fastest); the other candidates were deleted. Compare against different model families (older Llama instruct, small Gemma), not other sizes of the same family. See experiments.md.
 	Not yet implemented (next phases):
 		Phase 2: archive with zstd compression, MCP servers per project, environment-location UI polish, PySide6 native shell.
+			Hugging Face model manager (Settings → Models):
+				search/browse models and show downloaded ones with disk use
+				fit check before download (disk space, estimated VRAM at chosen quantization, tool-calling support, license/gated)
+				download with progress, pause/resume, and cancel into the models folder; delete models
+				switch the active model, applying that model's recommended presets
+				optional HF token for gated models
+				option to save a pre-quantized copy
 		Phase 3: long-term tasks. Persisted job queue with checkpoint/resume, background hours, notes → report workflow, auto-research loop.
 		Phase 4: specialist models. Dataset building from transcripts/notes, LoRA/QLoRA with peft, distillation, eval gate on bench/, adapter registry with hot-swap.
 		Phase 5: longer-term memory research (open_questions.md).

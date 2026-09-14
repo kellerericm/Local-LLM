@@ -17,6 +17,8 @@ DEFAULT_DATA_DIR = Path(os.environ.get("LOCALAGENT_DATA_DIR", r"D:\LocalAgent\da
 @dataclass
 class ResourceSettings:
     max_vram_gb: float = 14.0            # passed to from_pretrained(max_memory=...)
+    offload: str = "auto"                # auto: overflow to system RAM | gpu_only: everything on the GPU or fail
+    max_cpu_ram_gb: float = 12.0         # how much system RAM offloaded layers may use
     cpu_threads: int = 8                 # torch threads in the model worker
     idle_unload_minutes: float = 15.0    # 0 disables idle unload
     pause_when_gpu_busy: bool = True
@@ -32,12 +34,17 @@ class Settings:
     model_id: str = "Qwen/Qwen3.5-9B"          # chosen by benchmark, see experiments.md
     quantization: str = "4bit"           # none | 8bit | 4bit
     tool_call_format: str = "auto"          # auto | hermes | qwen3_coder
+    preset: str = "thinking_coding"          # see backend/model_profiles.py; "custom" = hand-tuned
     thinking: bool = True
+    thinking_budget: int = 0                 # max reasoning tokens per reply; 0 = no limit
     context_tokens: int = 32768
     max_new_tokens: int = 4096
     temperature: float = 0.6
     top_p: float = 0.95
     top_k: int = 20
+    min_p: float = 0.0
+    presence_penalty: float = 0.0
+    repetition_penalty: float = 1.0
     max_steps: int = 60
     max_consecutive_failures: int = 3
     tool_timeout_s: int = 300

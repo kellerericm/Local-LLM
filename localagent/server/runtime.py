@@ -114,7 +114,8 @@ class Runtime:
     def model_spec(self) -> dict:
         s = self.settings
         return {"model_id": s.model_id, "quantization": s.quantization, "max_vram_gb": s.resources.max_vram_gb,
-                "cpu_threads": s.resources.cpu_threads, "cache_dir": str(Path(s.models_dir))}
+                "cpu_threads": s.resources.cpu_threads, "cache_dir": str(Path(s.models_dir)),
+                "offload": s.resources.offload, "max_cpu_ram_gb": s.resources.max_cpu_ram_gb}
 
     def update_settings(self, patch: dict) -> Settings:
         with self._settings_lock:

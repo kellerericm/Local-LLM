@@ -60,6 +60,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 #side-footer { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 6px; }
 .status-line { font-size: 12px; padding: 0 6px; }
 .muted { color: var(--muted); }
+.warn-text { color: var(--warn); }
 
 /* Buttons */
 .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
@@ -123,6 +124,23 @@ details.reasoning div { white-space: pre-wrap; border-left: 2px solid var(--line
 #input { flex: 1; resize: vertical; min-height: 58px; max-height: 40vh; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
 #input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 .composer-actions { display: flex; flex-direction: column; gap: 6px; }
+
+/* Generation settings, usage, context meter */
+.btn.small { padding: 3px 9px; font-size: 12.5px; }
+#chat-gen { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#chat-gen.custom { border-color: var(--accent); color: var(--accent); }
+.usage { font-size: 11.5px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.usage .budget-hit { color: var(--warn); }
+.context-meter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.context-meter .bar { width: 64px; height: 6px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.context-meter .fill { display: block; height: 100%; width: 0; background: var(--accent); }
+.context-meter.high .fill { background: var(--warn); }
+.context-meter.full .fill { background: var(--danger); }
+details.advanced { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
+details.advanced summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
+.gen-editor { display: grid; gap: 10px; }
+.field input:disabled { opacity: .5; }
+.field a { color: var(--accent); }
 
 /* Tasks */
 #tasks-panel { width: 280px; border-left: 1px solid var(--line); padding: 14px 14px; overflow-y: auto; background: var(--bg); }

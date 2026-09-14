@@ -33,7 +33,7 @@ def worker_main(spec: dict, requests, responses, pause_ev, cancel_ev) -> None:
     except BaseException:
         responses.put({"type": "load_error", "error": traceback.format_exc()})
         return
-    responses.put({"type": "loaded"})
+    responses.put({"type": "loaded", "placement": backend.placement})
     control = Control(pause=pause_ev, cancel=cancel_ev)
     while True:
         req = requests.get()
@@ -44,7 +44,10 @@ def worker_main(spec: dict, requests, responses, pause_ev, cancel_ev) -> None:
             cancel_ev.clear()
             try:
                 for chunk in backend.generate(req["messages"], req["tools"], req["params"], req.get("adapter"), control):
-                    responses.put({"type": "token", "id": req["id"], "text": chunk})
+                    if isinstance(chunk, dict):
+                        responses.put({"type": "usage", "id": req["id"], "usage": chunk["usage"]})
+                    else:
+                        responses.put({"type": "token", "id": req["id"], "text": chunk})
                 responses.put({"type": "done", "id": req["id"], "cancelled": cancel_ev.is_set()})
             except BaseException:
                 responses.put({"type": "error", "id": req["id"], "error": traceback.format_exc()})
@@ -69,6 +72,7 @@ class WorkerBackend:
         self._spec: dict | None = None
         self.last_used = time.time()
         self.last_error: str | None = None
+        self.placement: dict = {}
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -111,6 +115,7 @@ class WorkerBackend:
                     continue
                 if msg["type"] == "loaded":
                     self.last_error = None
+                    self.placement = msg.get("placement") or {}
                     return
                 if msg["type"] == "load_error":
                     self.last_error = msg["error"]
@@ -151,7 +156,8 @@ class WorkerBackend:
         spec = self._spec or self._spec_getter()
         return {"backend": "transformers", "model_id": spec.get("model_id"), "loaded": self.is_loaded(),
                 "loading": self._loading, "busy": self._busy, "paused": self._pause.is_set(),
-                "worker_pid": self.worker_pid, "last_error": self.last_error}
+                "worker_pid": self.worker_pid, "last_error": self.last_error,
+                "placement": self.placement if self.is_loaded() else {}}
 
     # -- generation --------------------------------------------------------
     def generate(self, messages, tools, params, adapter=None, cancel=None, on_status=None) -> Iterator[str]:
@@ -184,6 +190,8 @@ class WorkerBackend:
                     continue
                 if msg["type"] == "token":
                     yield msg["text"]
+                elif msg["type"] == "usage":
+                    yield {"usage": msg["usage"]}
                 elif msg["type"] == "done":
                     finished = True
                     return

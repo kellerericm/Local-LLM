@@ -36,7 +36,8 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 
 ### Conclusion
 - **Default model: `Qwen/Qwen3.5-9B`**, set in `config.py`.
-- **Runner-up:** `unsloth/Qwen3-14B-bnb-4bit`, for harder reasoning when speed matters less. It's also the best choice if RAM is tight during loading.
+- **Runner-up:** `unsloth/Qwen3-14B-bnb-4bit`.
+- **Cleanup (2026-09-14):** Qwen3-8B and Qwen3-14B were deleted from D: at the user's request, since they're the same family as the chosen model. Future comparisons should use a different family (older Llama instruct, small Gemma). Qwen3-0.6B stays only for quick backend smoke tests.
 - **Caveat:** 10 short tasks can't separate good models well. Add longer, multi-hour tasks once the Phase 3 long-running-task system exists.
 
 ### Follow-ups

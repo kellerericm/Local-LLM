@@ -57,13 +57,31 @@ These are **always blocked**, with no approval possible: registry edits, permane
 Open **Settings** at the bottom of the sidebar.
 
 **Model**
-- *Model:* a Hugging Face model id (e.g. `Qwen/Qwen3.5-9B`, the default) or a local folder. Changing it reloads the model on the next message.
+- *Model:* a Hugging Face model id (e.g. `Qwen/Qwen3.5-9B`, the default) or a local folder. Changing it reloads the model on the next message, and switches the generation settings to that model's recommended preset. The line under the field shows which model family was recognized, with a link to its model card.
 - *Quantization:* `4bit` uses the least VRAM, `8bit` is a middle ground, `none` is full precision and needs far more VRAM.
-- *Models folder:* where downloads are cached.
-- *Default Python environment:* where `python`/`pip` point for the agent. Projects can override it.
-- *Context window / Max tokens per reply / Temperature / Top-p / Top-k:* generation limits and sampling.
+- *Context window:* how much conversation the model sees at once. Bigger remembers more of a long task but uses more GPU memory and runs slower. The hint shows the model's maximum.
 - *Tool-call format:* leave it on `auto` unless a model's tool calls aren't recognized.
-- *Reasoning mode:* thinking before answering. It's usually better on hard tasks but slower.
+- *Models folder / Default Python environment:* where downloads are cached, and where `python`/`pip` point for the agent (projects can override the environment).
+
+**Generation (app default).** Every setting here has a short explanation under it in the app.
+- *Preset:* the model publisher's recommended bundles. For Qwen3.5:
+  - **Thinking — coding & precise work** is the default and best for agent tasks.
+  - **Thinking — general** suits reasoning and writing.
+  - **Fast — no thinking** is for quick answers.
+  Picking a preset fills in the fields below. Editing any field switches to *Custom*.
+- *Reasoning (thinking):* the model reasons privately before answering. It's better on multi-step work but slower.
+- *Reasoning budget:* the most tokens it may spend thinking per reply (0 = no limit). When it reaches the budget it's steered to wrap up and act, and that reply is marked *reasoning budget reached*.
+- *Temperature:* randomness. Lower is focused and repeatable; higher is more varied but makes more mistakes.
+- *Max tokens per reply:* includes the thinking. Raise it if replies stop mid-thought.
+- *Advanced sampling:*
+  - *Top-p / Top-k / Min-p* limit which words are considered.
+  - *Presence penalty* and *Repetition penalty* discourage loops and repeated wording.
+
+**Per-chat model settings.** The **⚙** button in a chat's header opens the same controls for just that chat, e.g. a *Fast* chat for quick questions next to a careful *Thinking* chat. It shows *Default* when the chat follows the app settings, and the preset name (highlighted) when it has its own.
+
+**Usage display**
+- Under each reply: how many tokens went to thinking vs. the answer, the speed (tokens/second), and the time taken.
+- In the chat header, the **context meter** shows how full the context window was on the last reply. It turns amber at 70% and red at 90%. When it's full, older tool output gets shortened and the oldest turns are dropped.
 
 **Agent**
 - *Max steps per turn:* how many model replies one message may use before the agent stops and summarizes.
@@ -72,6 +90,9 @@ Open **Settings** at the bottom of the sidebar.
 
 **Resources.** The agent is meant to stay out of your way:
 - *VRAM limit:* the cap on GPU memory for the model.
+- *GPU offload:*
+  - **Auto** puts whatever doesn't fit under the VRAM limit into system RAM, capped by *System RAM for offloaded layers*. The offloaded part runs many times slower, and the sidebar status shows how much was offloaded.
+  - **GPU only** fails to load instead, so you know to pick a smaller model, lower the context window, or use 4-bit.
 - *CPU threads.*
 - *Unload model after idle:* frees all VRAM after N minutes without use. It reloads automatically on the next message.
 - *Pause when other apps use the GPU:* if a game or render starts using the GPU above the thresholds, generation pauses and resumes when they're done.
@@ -97,4 +118,4 @@ The status lines at the bottom of the sidebar show whether the model is loaded a
 | Benchmark results | `D:\LocalAgent\bench-runs` |
 
 ## Not in this version yet
-Archiving chats (with compression), MCP servers/plugins per project, a native desktop window, long-running background tasks, and fine-tuning/LoRA specialists. See the plan in `CLAUDE.md`.
+Archiving chats (with compression), downloading and managing models from Hugging Face inside the app, MCP servers/plugins per project, a native desktop window, long-running background tasks, and fine-tuning/LoRA specialists. See the plan in `CLAUDE.md`.

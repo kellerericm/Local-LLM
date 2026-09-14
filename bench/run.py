@@ -53,7 +53,8 @@ class TimedBackend:
         for chunk in self.inner.generate(messages, tools, params, adapter, cancel, status):
             if started is None:
                 started = time.time()
-            self.chars += len(chunk)
+            if isinstance(chunk, str):
+                self.chars += len(chunk)
             yield chunk
         if started:
             self.gen_seconds += time.time() - started

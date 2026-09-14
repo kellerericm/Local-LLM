@@ -160,8 +160,15 @@ function currentChat() { return S.chats.find((c) => c.id === S.currentChatId); }
 function renderHeader() {
   const chat = currentChat();
   $("#chat-header").hidden = !chat;
-  if (!chat) return;
+  if (!chat) { $("#send").hidden = false; $("#stop").hidden = true; return; }
   $("#chat-title").textContent = chat.title;
+  const overrides = chat.gen_overrides || {};
+  const custom = Object.keys(overrides).length > 0;
+  const genBtn = $("#chat-gen");
+  genBtn.classList.toggle("custom", custom);
+  $(".label", genBtn).textContent = custom ? presetLabel(overrides.preset, S.profile) : "Default";
+  genBtn.title = custom ? "This chat has its own model settings" : "Model settings for this chat (using app defaults)";
+  renderContextMeter();
   const project = S.projects.find((p) => p.id === chat.project_id);
   $("#chat-project").textContent = project ? project.name : "General";
   const pill = $("#run-state");
@@ -182,6 +189,20 @@ function renderHeader() {
   pill.className = cls;
   $("#send").hidden = running;
   $("#stop").hidden = !running;
+}
+
+function renderContextMeter(usage = latestUsage()) {
+  const meter = $("#context-meter");
+  if (!usage || !usage.context_tokens) { meter.hidden = true; return; }
+  const used = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+  const pct = Math.min(100, Math.round((used / usage.context_tokens) * 100));
+  meter.hidden = false;
+  $(".fill", meter).style.width = `${pct}%`;
+  $(".label", meter).textContent = `${fmtTokens(used)} / ${fmtTokens(usage.context_tokens)}`;
+  meter.classList.toggle("high", pct >= 70 && pct < 90);
+  meter.classList.toggle("full", pct >= 90);
+  meter.title = `Context used on the last reply: ${used} of ${usage.context_tokens} tokens (${pct}%). ` +
+    "When it fills up, older tool output is shortened and the oldest turns are dropped.";
 }
 
 function renderChat() {
@@ -238,6 +259,8 @@ function renderMessage(m, results) {
     if (m.reasoning) el.append(h("details", { class: "reasoning" }, h("summary", {}, "Reasoning"), h("div", {}, m.reasoning)));
     if (m.content) el.append(h("div", { class: "text", html: renderMarkdown(m.content) }));
     for (const c of m.tool_calls || []) el.append(toolCard(c, results?.get(c.id)));
+    const u = usageLine(m.usage);
+    if (u) el.append(u);
     return el;
   }
   return null;
@@ -325,6 +348,12 @@ function handleEvent(ev) {
     case "tasks":
       if (isCurrent) { S.tasks = ev.tasks; renderTasks(); }
       break;
+    case "usage":
+      if (isCurrent) renderContextMeter(ev.usage);
+      break;
+    case "settings":
+      S.settings = ev.settings;
+      break;
     case "approval_request":
       S.approvals.set(ev.approval.id, ev.approval);
       renderSidebar(); renderHeader(); showNextApproval();
@@ -363,7 +392,10 @@ async function refreshStatus() {
     let text = `Model: ${m.model_id || "?"} — `;
     text += m.loading ? "loading…" : m.loaded ? (m.busy ? "generating" : "loaded") : "not loaded";
     if (m.last_error) text += " (last load failed)";
+    const pl = m.placement || {};
+    if (pl.offloaded) text += ` · ${pl.offloaded_pct}% offloaded to RAM (slower)`;
     $("#model-status").textContent = text;
+    $("#model-status").classList.toggle("warn-text", !!pl.offloaded);
     $("#model-status").title = m.last_error || "";
     const r = st.resources;
     const bits = [];
@@ -529,9 +561,138 @@ function projectDialog(project = null) {
       }, project ? "Save" : "Create project")));
 }
 
+// ---------- model / generation settings ----------
+async function loadProfile(modelId) {
+  const q = modelId ? `?model_id=${encodeURIComponent(modelId)}` : "";
+  return api("GET", `/api/model/profile${q}`);
+}
+
+const PRESET_FIELDS = ["thinking", "temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"];
+
+// Editor for the generation settings, shared by the app Settings and per-chat settings.
+// `values` holds the current settings; `allowDefault` adds a "use app default" choice (per-chat).
+function generationEditor(values, profile, { allowDefault = false, defaultLabel = "" } = {}) {
+  const docs = profile.docs;
+  const inputs = {};
+  const numField = (key, label, step) => {
+    const [lo, hi] = profile.limits[key] || [];
+    inputs[key] = h("input", { type: "number", step, min: lo, max: hi, value: values[key] ?? "" });
+    inputs[key].addEventListener("input", () => { presetSel.value = "custom"; showNote(); });
+    return field(label, inputs[key], docs[key]);
+  };
+  const presetSel = h("select", {},
+    allowDefault ? h("option", { value: "__default__" }, `Use app default${defaultLabel ? ` (${defaultLabel})` : ""}`) : null,
+    Object.entries(profile.presets).map(([id, p]) => h("option", { value: id }, p.label)),
+    h("option", { value: "custom" }, "Custom"));
+  presetSel.value = values.__default__ ? "__default__" : (values.preset in profile.presets || values.preset === "custom") ? values.preset : "custom";
+  const note = h("div", { class: "hint" });
+  const showNote = () => {
+    const p = profile.presets[presetSel.value];
+    note.textContent = p ? p.note : presetSel.value === "__default__" ? "This chat follows the app-wide settings." : "Hand-tuned values.";
+  };
+  const thinking = h("input", { type: "checkbox" });
+  thinking.checked = !!values.thinking;
+  thinking.addEventListener("change", () => { presetSel.value = "custom"; showNote(); syncBudget(); });
+  inputs.thinking = thinking;
+  const fill = (v) => {
+    thinking.checked = !!v.thinking;
+    for (const k of PRESET_FIELDS.slice(1)) inputs[k].value = v[k];
+    syncBudget();
+  };
+  presetSel.addEventListener("change", () => {
+    const p = profile.presets[presetSel.value];
+    if (p) fill(p);
+    showNote();
+  });
+
+  const budgetField = numField("thinking_budget", "Reasoning budget (tokens, 0 = no limit)", "256");
+  const syncBudget = () => { inputs.thinking_budget.disabled = !thinking.checked; };
+  const el = h("div", { class: "gen-editor" },
+    h("div", { class: "grid2" },
+      field("Preset", presetSel, docs.preset), h("div", { class: "field" }, h("label", {}, " "), note)),
+    h("div", { class: "grid2" },
+      field("Reasoning (thinking)", h("label", { class: "check" }, thinking, "think before answering"), docs.thinking),
+      budgetField,
+      numField("temperature", "Temperature", "0.05"),
+      numField("max_new_tokens", "Max tokens per reply", "256")),
+    h("details", { class: "advanced" }, h("summary", {}, "Advanced sampling"),
+      h("div", { class: "grid2" },
+        numField("top_p", "Top-p", "0.05"),
+        numField("top_k", "Top-k", "1"),
+        numField("min_p", "Min-p", "0.01"),
+        numField("presence_penalty", "Presence penalty", "0.1"),
+        numField("repetition_penalty", "Repetition penalty", "0.01"))));
+  showNote();
+  syncBudget();
+  return {
+    el,
+    useDefault: () => presetSel.value === "__default__",
+    read: () => {
+      const out = { preset: presetSel.value, thinking: thinking.checked };
+      for (const k of ["thinking_budget", "temperature", "max_new_tokens", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"]) {
+        out[k] = Number(inputs[k].value);
+      }
+      return out;
+    },
+  };
+}
+
+async function chatSettingsDialog() {
+  const chat = currentChat();
+  if (!chat) return;
+  const [s, profile] = await Promise.all([api("GET", "/api/settings"), loadProfile()]);
+  const overrides = chat.gen_overrides || {};
+  const hasOverrides = Object.keys(overrides).length > 0;
+  const values = hasOverrides ? { ...s, ...overrides } : { ...s, __default__: true };
+  const editor = generationEditor(values, profile, { allowDefault: true, defaultLabel: presetLabel(s.preset, profile) });
+  const dlg = $("#modal");
+  dlg.oncancel = null;
+  openModal(
+    h("h3", {}, "Model settings for this chat"),
+    h("p", {}, `Applies only to "${chat.title}". App-wide defaults are in Settings. Model: ${s.model_id}.`),
+    editor.el,
+    h("div", { class: "modal-actions" },
+      h("span", { class: "spacer" }),
+      h("button", { type: "button", class: "btn ghost", onclick: () => dlg.close() }, "Cancel"),
+      h("button", {
+        type: "button", class: "btn primary", onclick: async () => {
+          try {
+            const updated = await api("PATCH", `/api/chats/${chat.id}`, { gen_overrides: editor.useDefault() ? {} : editor.read() });
+            Object.assign(chat, updated);
+            dlg.close();
+            renderHeader();
+            toast("Chat settings saved");
+          } catch (e) { toast(e.message); }
+        },
+      }, "Save")));
+}
+
+function presetLabel(id, profile) {
+  return profile?.presets?.[id]?.label || (id === "custom" ? "Custom" : id || "Default");
+}
+
+function fmtTokens(n) { return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n); }
+
+function usageLine(u) {
+  if (!u) return null;
+  const parts = [];
+  if (u.thinking_tokens) parts.push(`thinking ${fmtTokens(u.thinking_tokens)}`);
+  parts.push(`answer ${fmtTokens(u.answer_tokens ?? u.completion_tokens)} tokens`);
+  if (u.tokens_per_s) parts.push(`${u.tokens_per_s} tok/s`);
+  if (u.seconds) parts.push(`${u.seconds}s`);
+  return h("div", { class: "usage", title: `Prompt ${u.prompt_tokens} tokens · completion ${u.completion_tokens} tokens` },
+    parts.join(" · "), u.thinking_budget_hit ? h("span", { class: "budget-hit" }, " · reasoning budget reached") : null);
+}
+
+function latestUsage() {
+  for (let i = S.messages.length - 1; i >= 0; i--) if (S.messages[i].usage) return S.messages[i].usage;
+  return null;
+}
+
 async function settingsDialog() {
   const s = await api("GET", "/api/settings");
   const rules = await api("GET", "/api/approval_rules");
+  let profile = await loadProfile(s.model_id);
   const inputs = {};
   const text = (key, obj = s) => (inputs[key] = h("input", { type: "text", value: obj[key] ?? "" }));
   const num = (key, obj = s, step = "1") => (inputs[key] = h("input", { type: "number", step, value: obj[key] ?? "" }));
@@ -541,20 +702,41 @@ async function settingsDialog() {
   const dlg = $("#modal");
   dlg.oncancel = null;
   const scopeName = (scope) => scope === "general" ? "General chats" : (S.projects.find((p) => p.id === scope)?.name || scope);
+  let editor = generationEditor(s, profile);
+  const genWrap = h("div", {}, editor.el);
+  const contextHint = h("div", { class: "hint" });
+  const familyLine = h("div", { class: "hint" });
+  const showProfile = () => {
+    contextHint.textContent = `${profile.docs.context_tokens} This model supports up to ${fmtTokens(profile.context_max)}.`;
+    familyLine.replaceChildren(`Recognized as: ${profile.family}. `,
+      profile.source ? h("a", { href: profile.source, target: "_blank", rel: "noopener" }, "Model card") : "");
+  };
+  showProfile();
+  const modelInput = text("model_id");
+  modelInput.addEventListener("change", async () => {
+    // A different model has different recommended settings; switch the editor to them.
+    try {
+      profile = await loadProfile(modelInput.value.trim());
+      const preset = profile.presets[profile.default_preset];
+      editor = generationEditor({ ...s, ...preset, preset: profile.default_preset }, profile);
+      genWrap.replaceChildren(editor.el);
+      showProfile();
+      toast(`Applied recommended settings for ${profile.family}`);
+    } catch (e) { toast(e.message); }
+  });
   openModal(
     h("h3", {}, "Settings"),
     h("div", { class: "fieldset-title" }, "Model"),
     h("div", { class: "grid2" },
-      field("Model (Hugging Face id or local folder)", text("model_id")),
-      field("Quantization", quant),
+      field("Model (Hugging Face id or local folder)", modelInput, familyLine),
+      field("Quantization", quant, profile.docs.quantization),
+      field("Context window (tokens)", num("context_tokens", s, "1024"), contextHint),
+      field("Tool-call format", (inputs.tool_call_format = h("select", {}, ["auto", "hermes", "qwen3_coder"].map((f) => h("option", { value: f, selected: s.tool_call_format === f }, f)))), profile.docs.tool_call_format),
       field("Models folder (download cache)", text("models_dir")),
-      field("Default Python environment", text("env_path")),
-      field("Context window (tokens)", num("context_tokens")),
-      field("Max tokens per reply", num("max_new_tokens")),
-      field("Temperature", num("temperature", s, "0.05")),
-      field("Top-p / Top-k", h("div", { class: "grid2" }, num("top_p", s, "0.05"), num("top_k"))),
-      field("Tool-call format", (inputs.tool_call_format = h("select", {}, ["auto", "hermes", "qwen3_coder"].map((f) => h("option", { value: f, selected: s.tool_call_format === f }, f)))), "auto detects per reply"),
-      field("Reasoning (thinking) mode", h("label", { class: "check" }, check("thinking"), "enabled"))),
+      field("Default Python environment", text("env_path"))),
+    h("div", { class: "fieldset-title" }, "Generation (app default)"),
+    h("p", {}, "Each chat can override these from the ⚙ button in its header."),
+    genWrap,
     h("div", { class: "fieldset-title" }, "Agent"),
     h("div", { class: "grid2" },
       field("Max steps per turn", num("max_steps")),
@@ -563,6 +745,11 @@ async function settingsDialog() {
     h("div", { class: "fieldset-title" }, "Resources"),
     h("div", { class: "grid2" },
       field("VRAM limit (GB)", num("max_vram_gb", r, "0.5")),
+      field("GPU offload", (inputs.offload = h("select", {},
+        h("option", { value: "auto", selected: r.offload !== "gpu_only" }, "Auto: use system RAM if it doesn't fit"),
+        h("option", { value: "gpu_only", selected: r.offload === "gpu_only" }, "GPU only: fail if it doesn't fit"))),
+        profile.docs.offload),
+      field("System RAM for offloaded layers (GB)", num("max_cpu_ram_gb", r, "1"), "Only used in Auto mode."),
       field("CPU threads", num("cpu_threads", r)),
       field("Unload model after idle (minutes, 0 = never)", num("idle_unload_minutes", r, "1")),
       field("Pause when other apps use the GPU", h("label", { class: "check" }, check("pause_when_gpu_busy", r), "enabled")),
@@ -581,10 +768,14 @@ async function settingsDialog() {
       h("button", {
         type: "button", class: "btn primary", onclick: async () => {
           const val = (k) => inputs[k].type === "checkbox" ? inputs[k].checked : inputs[k].type === "number" ? Number(inputs[k].value) : inputs[k].value;
-          const patch = { quantization: quant.value, resources: {} };
-          for (const k of ["model_id", "models_dir", "env_path", "context_tokens", "max_new_tokens", "temperature", "top_p", "top_k", "tool_call_format", "thinking", "max_steps", "max_consecutive_failures", "tool_timeout_s"]) patch[k] = val(k);
-          for (const k of ["max_vram_gb", "cpu_threads", "idle_unload_minutes", "pause_when_gpu_busy", "gpu_busy_util_pct", "gpu_busy_mem_gb", "background_hours"]) patch.resources[k] = val(k);
-          try { await api("PUT", "/api/settings", patch); dlg.close(); toast("Settings saved"); refreshStatus(); } catch (e) { toast(e.message); }
+          const patch = { quantization: quant.value, resources: {}, ...editor.read() };
+          for (const k of ["model_id", "models_dir", "env_path", "context_tokens", "tool_call_format", "max_steps", "max_consecutive_failures", "tool_timeout_s"]) patch[k] = val(k);
+          for (const k of ["max_vram_gb", "offload", "max_cpu_ram_gb", "cpu_threads", "idle_unload_minutes", "pause_when_gpu_busy", "gpu_busy_util_pct", "gpu_busy_mem_gb", "background_hours"]) patch.resources[k] = val(k);
+          try {
+            S.settings = await api("PUT", "/api/settings", patch);
+            S.profile = profile;
+            dlg.close(); toast("Settings saved"); refreshStatus(); renderHeader();
+          } catch (e) { toast(e.message); }
         },
       }, "Save")));
 }
@@ -594,6 +785,8 @@ $("#new-chat").onclick = () => newChat(null);
 $("#new-project").onclick = () => projectDialog(null);
 $("#open-settings").onclick = settingsDialog;
 $("#chat-menu").onclick = chatMenu;
+$("#chat-gen").onclick = chatSettingsDialog;
+loadProfile().then((p) => { S.profile = p; renderHeader(); }).catch(() => {});
 $("#chat-title").ondblclick = renameChat;
 $("#composer").onsubmit = (e) => { e.preventDefault(); send(); };
 $("#stop").onclick = () => S.currentChatId && api("POST", `/api/chats/${S.currentChatId}/cancel`);

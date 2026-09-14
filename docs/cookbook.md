@@ -58,7 +58,7 @@ Stop the server with **Ctrl+C**.
 python -m localagent
 ```
 - The first message you send downloads the model set in Settings. The default is `Qwen/Qwen3.5-9B`, about 19 GB, chosen by benchmark (see `experiments.md`). Then it loads (about a minute), and later messages are quick.
-- While loading, 4-bit quantization briefly uses about 19 GB of system RAM. Close memory-heavy apps first, or pick the pre-quantized `unsloth/Qwen3-14B-bnb-4bit` in Settings, which avoids the spike.
+- While loading, 4-bit quantization briefly uses about 19 GB of system RAM. Close memory-heavy apps first. Pre-quantized checkpoints (repos with `bnb-4bit` in the name) avoid this spike.
 - To download ahead of time:
   ```powershell
   python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3.5-9B', cache_dir=r'D:\LocalAgent\models')"
@@ -76,11 +76,10 @@ python -m localagent
 
 ## 9. Benchmark models (optional)
 ```powershell
-python -m bench.run --model Qwen/Qwen3-8B
 python -m bench.run --model Qwen/Qwen3.5-9B
-python -m bench.run --model unsloth/Qwen3-14B-bnb-4bit
 ```
 Results are saved to `D:\LocalAgent\bench-runs\<date>_<model>\summary.md`. Each run takes roughly 10–40 minutes.
+To compare, pick a model from a **different family** (e.g. a small Gemma or Llama instruct model) rather than another size of the same one. Delete candidates you don't keep: they're large.
 
 ## Troubleshooting
 | Symptom | Try |

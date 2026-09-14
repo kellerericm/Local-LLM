@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..backend.model_profiles import GEN_KEYS, LIMITS, PARAM_DOCS, profile_for, validate_generation
 from ..config import Settings
 from ..safety.paths import normalize
 from .runtime import Runtime
@@ -46,6 +47,7 @@ class ChatPatch(BaseModel):
     title: str | None = None
     project_id: str | None = None
     move_to_general: bool = False
+    gen_overrides: dict | None = None      # {} or null clears; keys from model_profiles.GEN_KEYS
 
 
 class SendIn(BaseModel):
@@ -156,6 +158,12 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         fields = body.model_dump(exclude_unset=True, exclude={"move_to_general"})
         if body.move_to_general:
             fields["project_id"] = None
+        if "gen_overrides" in fields:
+            overrides = {k: v for k, v in (fields["gen_overrides"] or {}).items() if k in GEN_KEYS}
+            errors = validate_generation(overrides)
+            if errors:
+                raise HTTPException(400, "; ".join(errors))
+            fields["gen_overrides"] = overrides
         chat = rt.store.update_chat(chat_id, **fields)
         rt.bus.publish({"type": "state_changed"})
         return chat
@@ -217,7 +225,20 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
             _validate_env(patch["env_path"])
         if patch.get("quantization") not in (None, "none", "4bit", "8bit"):
             raise HTTPException(400, "quantization must be none, 4bit, or 8bit")
+        errors = validate_generation(patch)
+        if (patch.get("resources") or {}).get("offload") not in (None, "auto", "gpu_only"):
+            errors.append("offload must be auto or gpu_only")
+        context_max = profile_for(patch.get("model_id") or rt.settings.model_id)["context_max"]
+        if patch.get("context_tokens") and int(patch["context_tokens"]) > context_max:
+            errors.append(f"context_tokens can be at most {context_max} for this model")
+        if errors:
+            raise HTTPException(400, "; ".join(errors))
         return rt.update_settings(patch).to_dict()
+
+    @app.get("/api/model/profile")
+    def model_profile(model_id: str | None = None):
+        return {**profile_for(model_id or rt.settings.model_id), "docs": PARAM_DOCS, "limits": LIMITS,
+                "gen_keys": list(GEN_KEYS)}
 
     @app.post("/api/model/unload")
     def unload():

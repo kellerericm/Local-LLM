@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalAgent</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">◆</span> LocalAgent
+    </div>
+    <button id="new-chat" class="btn primary wide">New chat</button>
+    <nav id="nav">
+      <section>
+        <div class="section-head"><span>Chats</span></div>
+        <ul id="general-chats" class="chat-list"></ul>
+      </section>
+      <section>
+        <div class="section-head"><span>Projects</span><button id="new-project" class="icon-btn" title="New project">＋</button></div>
+        <div id="projects"></div>
+      </section>
+    </nav>
+    <footer id="side-footer">
+      <div id="model-status" class="status-line">Model: …</div>
+      <div id="resource-status" class="status-line muted"></div>
+      <button id="open-settings" class="btn ghost wide">Settings</button>
+    </footer>
+  </aside>
+
+  <main id="main">
+    <header id="chat-header" hidden>
+      <div class="title-wrap">
+        <h1 id="chat-title" title="Double-click to rename"></h1>
+        <span id="chat-project" class="badge"></span>
+      </div>
+      <div class="header-actions">
+        <span id="run-state" class="pill" hidden></span>
+        <button id="chat-menu" class="icon-btn" title="Chat options">⋯</button>
+      </div>
+    </header>
+    <div id="empty" class="empty">
+      <h2>Start a chat</h2>
+      <p>General chats use a scratch workspace. Create a project to give the agent its own folder.</p>
+    </div>
+    <div id="messages" hidden></div>
+    <form id="composer" hidden>
+      <textarea id="input" rows="3" placeholder="Message the agent…  (Enter to send, Shift+Enter for a new line)"></textarea>
+      <div class="composer-actions">
+        <button type="button" id="stop" class="btn danger" hidden>Stop</button>
+        <button type="submit" id="send" class="btn primary">Send</button>
+      </div>
+    </form>
+  </main>
+
+  <aside id="tasks-panel" hidden>
+    <div class="section-head"><span>Task list</span></div>
+    <ol id="tasks"></ol>
+  </aside>
+</div>
+
+<div id="menu" class="menu" hidden></div>
+
+<dialog id="modal">
+  <form method="dialog" id="modal-body"></form>
+</dialog>
+
+<div id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

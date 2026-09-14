@@ -1,0 +1,15 @@
+# Install torch first, from the CUDA index (see docs/cookbook.md):
+#   python -m pip install torch --index-url https://download.pytorch.org/whl/cu130
+transformers>=5.0
+accelerate
+bitsandbytes
+peft
+huggingface_hub
+fastapi
+uvicorn[standard]
+psutil
+nvidia-ml-py
+jsonschema
+zstandard
+pytest
+httpx

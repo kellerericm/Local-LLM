@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from ..config import Settings
 from ..safety.paths import normalize
 from .runtime import Runtime
+from .titles import make_title
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -72,6 +73,13 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
 
     app = FastAPI(title="LocalAgent", lifespan=lifespan)
     app.state.runtime = rt
+
+    @app.middleware("http")
+    async def no_stale_ui(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"   # revalidate so app updates show up
+        return response
 
     # -- overview ----------------------------------------------------------
     @app.get("/api/state")
@@ -168,8 +176,7 @@ def create_app(settings: Settings, backend=None) -> FastAPI:
         if not body.text.strip():
             raise HTTPException(400, "Empty message")
         if chat["title"] == "New chat":
-            title = " ".join(body.text.split())[:60]
-            rt.store.update_chat(chat_id, title=title)
+            rt.store.update_chat(chat_id, title=make_title(body.text))
             rt.bus.publish({"type": "state_changed"})
         if not rt.runs.start(chat_id, body.text):
             raise HTTPException(409, "This chat is already running.")

@@ -48,6 +48,12 @@ def test_end_to_end_with_fake_model(settings, workspace):
         assert tool["ok"] and "readme.txt" in tool["content"]
         assert data["chat"]["title"] == "/ls"
 
+        # A new chat started from a first message gets a short summary title.
+        started = client.post("/api/chats", json={}).json()
+        client.post(f"/api/chats/{started['id']}/send", json={"text": "Could you please list the files here?"})
+        wait_idle(client, started["id"])
+        assert client.get(f"/api/chats/{started['id']}").json()["chat"]["title"] == "List the files here"
+
         # Reading outside the workspace triggers an approval; deny it.
         client.post(f"/api/chats/{chat['id']}/send", json={"text": "/outside"})
         approval = wait_for_approval(client)

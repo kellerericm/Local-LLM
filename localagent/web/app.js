@@ -188,7 +188,7 @@ function renderChat() {
   const chat = currentChat();
   $("#empty").hidden = !!chat;
   $("#messages").hidden = !chat;
-  $("#composer").hidden = !chat;
+  $("#composer").hidden = false;     // on the landing page, sending starts a new chat
   renderHeader();
   renderTasks();
   if (!chat) return;
@@ -385,13 +385,26 @@ async function newChat(projectId = null) {
 async function send() {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text || !S.currentChatId) return;
+  if (!text || send.busy) return;
+  send.busy = true;
   try {
+    if (!S.currentChatId) {
+      // Landing page: start a new general chat. The server titles it from this first message.
+      const chat = await api("POST", "/api/chats", { project_id: null });
+      S.chats.unshift(chat);
+      S.currentChatId = chat.id;
+      store.set("currentChatId", chat.id);
+      S.messages = [];
+      S.tasks = [];
+      renderSidebar();
+      renderChat();
+    }
     await api("POST", `/api/chats/${S.currentChatId}/send`, { text });
     input.value = "";
     S.running.add(S.currentChatId);
     renderHeader();
   } catch (e) { toast(e.message); }
+  finally { send.busy = false; }
 }
 
 function openMenu(anchor, items) {

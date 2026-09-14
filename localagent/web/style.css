@@ -28,6 +28,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Rules like `#composer { display: flex }` would otherwise override the hidden attribute. */
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, "Segoe UI", sans-serif; }
 button, input, textarea, select { font: inherit; color: inherit; }

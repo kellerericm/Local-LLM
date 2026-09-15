@@ -71,6 +71,18 @@
 			JobRunner: plan approval gate, retries with failure guidance, per-task questions, budgets incl. indefinite, Pause at break points, immediate Stop, chat preemption at step boundaries, restart recovery, pre-approved job permissions.
 			Mirrors in <workspace>/jobs/<slug>/ (README, job, plan, journal). Job API (server/routes_jobs.py) and UI (web/jobs.js).
 			Not yet: model-driven replanning after exhausted attempts (user retries/skips instead), notes/FTS, reviewer pass, templates (3b–3d).
+			Scratchpad (approved addition): per-job Context items (update_context, capped, user-editable), task list with checkboxes, and per-task checklists (update_checklist) that survive retries, pauses, and restarts. Mirrored to jobs/<slug>/scratchpad.md.
+			Job approvals are non-blocking (ApprovalBroker.request_async): a task parks on an approval while others run.
+		Phase 3b (implemented 2026-09-14):
+			documents.py: txt/md/PDF/DOCX extraction with cache.
+			Notes table + SQLite FTS5; add_note verifies quotes verbatim against the source; search_notes; read_document tool.
+			Templates (jobs/templates/): code-built plans, code tasks, user gates, plan growth.
+			Reviewer pass (jobs/review.py): fresh context, never sees the worker transcript; also removes unsupported context items.
+			Checks citations_valid, notes_for_source, references_recorded.
+			research_report template: read → notes → reviewed outline → outline gate → reviewed sections → summary → compile md/docx.
+			deep_research template: seeds from folder/list/query with seed gate; per-paper acquire (open-access via OpenAlex/arXiv, else ask the user) and reviewed section-by-section read with record_references; citation rounds with convergence (≥3 or ≥15%), 4 rounds, 60 papers; layout gate; sections, abstract, compile with bibliography. Network needs the net:open-access job permission or an approval.
+			Real auto-research benchmark: sandbox/lm_speedrun (byte-level GPT, 5-minute budget, bits-per-byte on hidden Shakespeare text).
+			deep_research final test topic: biological mechanisms and ML approaches to long-term memory and planning.
 		Phase 3: long-term tasks ("jobs"). Design (approved): docs/design/phase3_long_running_tasks.md.
 			The coordinator owns the structure (persistent job, plan tree, checkpoints, budgets, scheduler); the model does bounded steps in fresh task-scoped contexts.
 			Memory lives outside the model: notes with verbatim quotes + SQLite FTS5 search, journal, artifacts, markdown mirrors in <workspace>/jobs/.

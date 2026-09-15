@@ -66,6 +66,25 @@ LocalAgent is an AI agent that runs entirely on your computer. You give it tasks
 - **The plan tree.** Click a task for its instructions, *done when*, checks, results, notes carried between attempts, and transcripts.
 - **The journal:** a timeline of what happened and why.
 
+**Job types.** Pick one in the New Job dialog:
+- **General task:** the agent plans the work itself, and you approve the plan.
+- **Research report:** point it at a folder of documents (TXT, MD, PDF, DOCX) and ask a question.
+  1. It reads every document and saves **evidence notes**, each a claim plus an exact quote. A quote that doesn't appear word for word in the source is rejected.
+  2. It writes `outline.md`, including a *Conflicts and open questions* section. A **reviewer** (a separate, fresh model session) checks it.
+  3. You **approve the outline** or ask for changes.
+  4. It writes each section with citations like `[n12]`. Each section is reviewed.
+  5. It compiles `report.md` (or DOCX for formal reports) with a *Sources and evidence* appendix listing every cited quote.
+- **Deep research (citation snowballing):** literature research that follows citations.
+  1. **Starting papers** come from a folder, a pasted list of titles/DOIs/arXiv links, or a search query. For lists and queries you review the seed list first: reply *approve*, *drop 2, 5*, or a new query.
+  2. **Each paper** is downloaded if a legal open-access copy exists; otherwise you're asked to add the PDF or skip it. It's then read section by section into `papers/<paper>.md` (section summaries, key claims with verified quotes, and a *value of this paper* assessment), and its reference list is recorded. Each write-up is reviewed.
+  3. **After each round,** the job counts how many papers it has read cite each unread work (`citation_graph.md`) and reads the most-cited ones next.
+  4. **It stops** when citations converge (no unread work is cited by 3 or more papers read, or 15% of them), after 4 citation rounds, or at 60 papers. You can change these limits.
+  5. **The report:** you approve a layout (abstract, introduction, literature review by theme, foundational works, synthesis of agreements, conflicts, and gaps, and conclusion). It then writes and reviews each section, writes the abstract last, and compiles the report with a bibliography and a note on how the literature was gathered.
+
+  Deep research needs the **"Search open scholarly indexes and download open-access papers"** pre-approval, or it will ask the first time it needs the network. It uses OpenAlex and arXiv and never fetches paywalled copies.
+
+**Reviews.** In research jobs, a reviewer checks each important result before the task counts as done: does it meet "done when", are claims supported by the quoted evidence, and are disagreements presented as disagreements. It also removes guesses the worker wrote into the scratchpad as facts. A rejection sends the task back with the reviewer's specific issues. The *Evidence notes* panel in the job view lets you search every saved quote.
+
 **The scratchpad: the job's working memory.** Every task reads it before doing anything:
 - **Context:** short notes about facts, decisions, where files are, and approaches that didn't work. The agent adds them as it learns, and you can add or remove notes in the job view. It has a size cap; when full, the agent is asked to merge or drop outdated notes.
 - **Task list:** the plan with checkboxes: `[x]` done (with a one-line result), `[>]` current, `[ ]` to do, `[!]` failed, `[?]` waiting on you.
@@ -165,4 +184,4 @@ The status lines at the bottom of the sidebar show whether the model is loaded a
 | Benchmark results | `D:\LocalAgent\bench-runs` |
 
 ## Not in this version yet
-Archiving chats (with compression), downloading and managing models from Hugging Face inside the app, MCP servers/plugins per project, and a native desktop window. For jobs: research-report and auto-research templates (notes with citations, reviewer checks, train/test splits), starting jobs from a chat, and PDF/DOCX reading. Also fine-tuning/LoRA specialists. See the plan in `CLAUDE.md`.
+Archiving chats (with compression), downloading and managing models from Hugging Face inside the app, MCP servers/plugins per project, and a native desktop window. For jobs: the auto-research template (keep/revert experiments with train/test splits), starting jobs from a chat, OCR for scanned PDFs, and model-driven re-planning when a task fails all its attempts. Also fine-tuning/LoRA specialists. See the plan in `CLAUDE.md`.

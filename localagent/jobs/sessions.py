@@ -13,6 +13,15 @@ from .tools import (ADD_NOTE, CHECK_CITATIONS, COMPLETE_TASK, FAIL_TASK, JOB_ASK
                     SEARCH_NOTES, UPDATE_CHECKLIST, UPDATE_CONTEXT)
 
 READ_ONLY_TOOLS = ("read_file", "read_document", "list_dir", "glob", "grep")
+ATTEMPT_NOTES_SHOWN = 2
+
+
+def recent_guidance(items: list[str]) -> tuple[list[str], int]:
+    """Everything the user said, plus only the latest attempt notes: a long failure history crowds the context and
+    describes files that may no longer exist (dry run 8: six notes about an outline that had been moved aside)."""
+    attempt = [i for i, g in enumerate(items) if g.startswith(("A previous attempt", "Attempt "))]
+    drop = set(attempt[:-ATTEMPT_NOTES_SHOWN])
+    return [g for i, g in enumerate(items) if i not in drop], len(drop)
 
 
 def job_project(store, job: dict) -> dict | None:
@@ -139,7 +148,10 @@ class TaskSession(JobSession):
                 f"- {describe(c)}" for c in t["checks"]) + "\n"
         guidance = ""
         if t["guidance"]:
-            guidance = "\n## Notes from earlier attempts and the user\n" + "\n".join(f"- {g}" for g in t["guidance"]) + "\n"
+            shown, omitted = recent_guidance(t["guidance"])
+            guidance = ("\n## Notes from earlier attempts and the user\n" + "\n".join(f"- {g}" for g in shown)
+                        + (f"\n- ({omitted} older attempt notes omitted; files may have changed since, so check the "
+                           "workspace rather than trusting old descriptions of it.)" if omitted else "") + "\n")
         block = prompts.TASK_BLOCK.format(title=self.job["title"], goal=self.job["goal"],
                                           scratchpad=self.scratchpad(ctx, t),
                                           key=t["key"], task_title=t["title"], instructions=t["instructions"] or "-",

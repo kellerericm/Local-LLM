@@ -574,3 +574,16 @@ def test_job_api(settings, workspace):
         assert any(j["id"] == job["id"] for j in client.get("/api/state").json()["jobs"])
         assert client.delete(f"/api/jobs/{job['id']}").status_code == 200
         assert client.get(f"/api/jobs/{job['id']}").status_code == 404
+
+
+def test_task_prompt_shows_user_guidance_and_only_recent_attempt_notes():
+    from localagent.jobs.sessions import recent_guidance
+    items = ["A previous attempt ended without finishing (step_limit). one",
+             "You asked the user: \"which file?\" They answered: \"data.csv\"",
+             "A previous attempt ended without finishing (needs_help). two",
+             "The reviewer rejected the result: fix the table",
+             "A previous attempt was interrupted (stopped, paused, or the app restarted) after these actions: three",
+             "A previous attempt called complete_task, but these checks failed: four"]
+    shown, omitted = recent_guidance(items)
+    assert omitted == 2 and not any(s.endswith((" one", " two")) for s in shown)
+    assert "data.csv" in shown[0] and "reviewer" in shown[1] and shown[-1].endswith("four")

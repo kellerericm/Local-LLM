@@ -142,7 +142,8 @@ class JobStore:
         self.s = store
         with store._lock:
             store._conn.executescript(JOB_SCHEMA)
-            added = {"job_tasks": [("waiting_kind", "TEXT"), ("checklist", "TEXT")]}
+            added = {"job_tasks": [("waiting_kind", "TEXT"), ("checklist", "TEXT"), ("kind", "TEXT"), ("handler", "TEXT"),
+                                   ("params", "TEXT"), ("review", "INTEGER")]}
             for table, columns in added.items():
                 existing = {r[1] for r in store._conn.execute(f"PRAGMA table_info({table})")}
                 for name, sql_type in columns:
@@ -213,7 +214,30 @@ class JobStore:
             return None
         for k in ("checks", "depends_on", "guidance", "checklist"):
             row[k] = json.loads(row[k]) if row.get(k) else []
+        row["params"] = json.loads(row["params"]) if row.get("params") else {}
+        row["kind"] = row.get("kind") or "agent"
+        row["review"] = bool(row.get("review"))
         return row
+
+    def _insert_task(self, job_id: str, pos: int, t: dict, now: float) -> None:
+        self.s._conn.execute(
+            "INSERT INTO job_tasks(id,job_id,key,parent_key,position,title,instructions,done_when,checks,depends_on,"
+            "status,max_attempts,kind,handler,params,review,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex[:12], job_id, t["key"], t.get("parent_key") or None, pos, t["title"],
+             t.get("instructions", ""), t.get("done_when", ""), json.dumps(t.get("checks") or []),
+             json.dumps(t.get("depends_on") or []), T_PENDING, int(t.get("max_attempts", 3)), t.get("kind") or "agent",
+             t.get("handler"), json.dumps(t.get("params") or {}), int(bool(t.get("review"))), now, now))
+
+    def append_tasks(self, job_id: str, tasks: list[dict]) -> list[dict]:
+        """Add tasks to an existing plan (template expansion). Keys must be new."""
+        now = time.time()
+        with self.s._lock:
+            start = self.s._conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM job_tasks WHERE job_id=?",
+                                         (job_id,)).fetchone()[0]
+            for i, t in enumerate(tasks):
+                self._insert_task(job_id, start + i, t, now)
+            self.s._conn.commit()
+        return self.list_tasks(job_id)
 
     def replace_plan(self, job_id: str, tasks: list[dict]) -> list[dict]:
         """Replace all tasks of a job with a validated plan (list of dicts with key/parent_key/...)."""
@@ -221,12 +245,7 @@ class JobStore:
         with self.s._lock:
             self.s._conn.execute("DELETE FROM job_tasks WHERE job_id=?", (job_id,))
             for pos, t in enumerate(tasks):
-                self.s._conn.execute(
-                    "INSERT INTO job_tasks(id,job_id,key,parent_key,position,title,instructions,done_when,checks,depends_on,"
-                    "status,max_attempts,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (uuid.uuid4().hex[:12], job_id, t["key"], t.get("parent_key") or None, pos, t["title"],
-                     t.get("instructions", ""), t.get("done_when", ""), json.dumps(t.get("checks") or []),
-                     json.dumps(t.get("depends_on") or []), T_PENDING, int(t.get("max_attempts", 3)), now, now))
+                self._insert_task(job_id, pos, t, now)
             self.s._conn.commit()
         return self.list_tasks(job_id)
 
@@ -239,6 +258,7 @@ class JobStore:
 
     def update_task(self, task_id: str, **fields) -> dict | None:
         json_fields = {"checks", "depends_on", "guidance", "checklist"}
+        json_fields = json_fields | {"params"}
         allowed = json_fields | {"title", "instructions", "done_when", "status", "attempts", "max_attempts",
                                  "result_summary", "question", "waiting_kind"}
         sets, params = [], []

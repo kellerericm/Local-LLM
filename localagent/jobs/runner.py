@@ -22,7 +22,9 @@ from .models import (ACTIVE_JOB_STATUSES, AWAITING_APPROVAL, CANCELLED, DONE, FA
                      T_DONE, T_FAILED, T_FINISHED, T_PENDING, T_RUNNING, T_SKIPPED, T_WAITING, TERMINAL_JOB_STATUSES,
                      WAITING_USER, JobStore)
 from .planner import leaves, next_ready_leaf
+from .review import ReviewSession, review_request
 from .sessions import JobApprover, PlanSession, TaskSession
+from .templates import HandlerResult, get_template
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +170,8 @@ class JobRunner:
                 raise ValueError("That task isn't waiting for an answer.")
             if task.get("waiting_kind") == "approval":
                 raise ValueError("That task is waiting for an approval; decide in the approval dialog.")
+            if task.get("waiting_kind") == "gate":
+                return self._decide_gate(job, task, text)
             self.jobs.add_guidance(task_id, f"You asked the user: \"{task['question']}\" They answered: \"{text}\"")
             self.jobs.update_task(task_id, status=T_PENDING, question=None, waiting_kind=None)
             self.jobs.journal(job_id, "answer", f"User answered: {text}", task["key"])
@@ -183,6 +187,20 @@ class JobRunner:
             self.jobs.update_job(job_id, inputs=inputs, status=PLANNING, status_reason=None)
             self.jobs.journal(job_id, "answer", f"User answered the planning question: {text}")
         return self._changed(job_id, wake=True)
+
+    def _decide_gate(self, job: dict, task: dict, text: str) -> dict:
+        decision = get_template(job["template"]).on_gate(self, job, task, text)
+        if decision == "approve":
+            self.jobs.update_task(task["id"], status=T_DONE, question=None, waiting_kind=None,
+                                  result_summary=f"Approved by the user: {text}"[:400])
+            self.jobs.journal(job["id"], "gate", f"Approved: {text}", task["key"])
+            self._task_done_hook(job, self.jobs.get_task(task["id"]))
+        else:
+            self.jobs.update_task(task["id"], status=T_PENDING, question=None, waiting_kind=None)
+            self.jobs.journal(job["id"], "gate", f"Changes requested: {text}", task["key"])
+        if self.jobs.get_job(job["id"])["status"] == WAITING_USER:
+            self.jobs.update_job(job["id"], status=RUNNING, status_reason=None)
+        return self._changed(job["id"], wake=True)
 
     def on_approval(self, job_id: str, task_id: str | None, keys: list[str], summary: str, decision: str) -> None:
         """Called when the user decides on a job's approval request (from the API thread)."""
@@ -290,7 +308,23 @@ class JobRunner:
                 continue
             if job["status"] == PLANNING:
                 self._rr = (self._rr + i + 1) % n
-                self._plan(job)
+                template = get_template(job["template"])
+                try:
+                    plan = template.initial_plan(self, job)
+                except Exception as e:
+                    log.exception("template planning failed")
+                    self.jobs.update_job(job["id"], status=FAILED, status_reason=f"Couldn't set up the job: {e}")
+                    self.jobs.journal(job["id"], "failed", f"Template setup failed: {e}")
+                    self._changed(job["id"])
+                    return True
+                if plan is None:
+                    self._plan(job)
+                else:
+                    self.jobs.replace_plan(job["id"], plan)
+                    self.jobs.update_job(job["id"], status=AWAITING_APPROVAL, status_reason="Review and approve the plan")
+                    self.jobs.journal(job["id"], "plan", f"Plan prepared by the {template.label} template "
+                                                         f"({len(leaves(self.jobs.list_tasks(job['id'])))} tasks).")
+                    self._changed(job["id"])
                 return True
             tasks = self.jobs.list_tasks(job["id"])
             if self._budget_exceeded(job):
@@ -436,6 +470,14 @@ class JobRunner:
         self._changed(job["id"])
 
     def _run_task(self, job: dict, task: dict, tasks: list[dict]) -> None:
+        if task["kind"] == "code":
+            return self._run_code_task(job, task)
+        if task["kind"] == "gate":
+            prompt = task["params"].get("prompt") or task["title"]
+            self.jobs.update_task(task["id"], status=T_WAITING, waiting_kind="gate", question=prompt)
+            self.jobs.journal(job["id"], "gate", f"Waiting for your review: {prompt}", task["key"])
+            self._changed(job["id"])
+            return
         attempt = task["attempts"] + 1
         self.jobs.update_task(task["id"], status=T_RUNNING)
         run = self.jobs.create_run(job["id"], "task", task["id"], attempt)
@@ -451,7 +493,7 @@ class JobRunner:
 
         if res and res["kind"] == "complete":
             try:
-                results = self._check(job, task)
+                results = self._check(job, task, res["summary"])
             except ApprovalPending as e:
                 res = {"kind": "approval", "approval_id": e.approval_id, "summary": f"{e.summary} (a task check)"}
                 self.jobs.add_guidance(task["id"], f"You called complete_task with this summary: {session.result['summary']} "
@@ -460,11 +502,19 @@ class JobRunner:
                 results = None
         if res and res["kind"] == "complete":
             failed = [r for r in results if not r.ok]
-            if not failed:
+            review = None
+            if not failed and task["review"]:
+                review = self._review(job, task, res["summary"], run)
+            if not failed and review is not None and not review["passed"]:
+                self._attempt_failed(job, task, run, session, "review_rejected",
+                                     "A reviewer rejected the previous attempt:\n" + review["issues_text"])
+            elif not failed:
                 self.jobs.update_task(task["id"], status=T_DONE, result_summary=res["summary"][:1200])
                 self.jobs.finish_run(run["id"], "done", "complete", res["summary"], session.steps)
                 passed = f" ({len(results)} checks passed)" if results else ""
-                self.jobs.journal(job["id"], "done", f"Done{passed}: {res['summary'][:200]}", task["key"])
+                reviewed = " (reviewed)" if review else ""
+                self.jobs.journal(job["id"], "done", f"Done{passed}{reviewed}: {res['summary'][:200]}", task["key"])
+                self._task_done_hook(job, self.jobs.get_task(task["id"]))
             else:
                 lines = "\n".join(r.line() for r in failed)
                 self._attempt_failed(job, task, run, session, "checks_failed",
@@ -497,7 +547,7 @@ class JobRunner:
                                  f"A previous attempt ended without finishing ({outcome}). Its last message: {last[:600]}")
         self._changed(job["id"])
 
-    def _check(self, job: dict, task: dict):
+    def _check(self, job: dict, task: dict, summary: str = ""):
         if not task["checks"]:
             return []
         settings = self.settings_getter()
@@ -506,8 +556,94 @@ class JobRunner:
         env_path = Path(project["env_path"] or settings.env_path)
         guard = PathGuard(workspace, env_path)
         approver = JobApprover(self.approvals, self, job, task["id"])
-        ask = lambda keys, summary, detail: approver.request(None, project["id"], keys, summary, detail)  # noqa: E731
-        return run_checks(task["checks"], workspace, env_path, guard, self.coordinator.policy, ask)
+        ask = lambda keys, summary_, detail: approver.request(None, project["id"], keys, summary_, detail)  # noqa: E731
+        return run_checks(task["checks"], workspace, env_path, guard, self.coordinator.policy, ask,
+                          notes=lambda: self.jobs.list_notes(job["id"]), summary=summary)
+
+    # -- templates: code tasks, gates, reviews, plan growth ---------------------------------------
+    def _task_done_hook(self, job: dict, task: dict) -> None:
+        try:
+            get_template(job["template"]).on_task_done(self, self.jobs.get_job(job["id"]), task)
+        except Exception as e:
+            log.exception("template on_task_done failed")
+            self.jobs.journal(job["id"], "error", f"Template couldn't extend the plan after this task: {e}", task["key"])
+
+    def _run_code_task(self, job: dict, task: dict) -> None:
+        template = get_template(job["template"])
+        handler = template.handlers.get(task["handler"] or "")
+        self.jobs.update_task(task["id"], status=T_RUNNING)
+        run = self.jobs.create_run(job["id"], "code", task["id"], task["attempts"] + 1)
+        self.jobs.journal(job["id"], "start", f"Started: {task['title']}", task["key"])
+        self._changed(job["id"])
+        started = time.time()
+        try:
+            if handler is None:
+                raise RuntimeError(f"Unknown handler {task['handler']!r} for template {template.name}")
+            result = handler(self, self.jobs.get_job(job["id"]), task)
+        except ApprovalPending as e:
+            self.jobs.update_task(task["id"], status=T_WAITING, question=f"Approval needed: {e.summary}",
+                                  waiting_kind="approval")
+            self.jobs.finish_run(run["id"], "done", "waiting_approval", e.summary, 0)
+            self.jobs.journal(job["id"], "approval", f"Waiting for approval: {e.summary}", task["key"])
+            self._changed(job["id"])
+            return
+        except Exception as e:
+            log.exception("code task %s failed", task["key"])
+            result = HandlerResult(False, f"{type(e).__name__}: {e}", retry_guidance=str(e))
+        finally:
+            self.jobs.add_usage(job["id"], time.time() - started, 0)
+        if result.wait_question:
+            self.jobs.update_task(task["id"], status=T_WAITING, question=result.wait_question, waiting_kind="question")
+            self.jobs.finish_run(run["id"], "done", "ask", result.wait_question, 0)
+            self.jobs.journal(job["id"], "question", result.wait_question, task["key"])
+        elif result.ok:
+            self.jobs.update_task(task["id"], status=T_DONE, result_summary=result.summary[:1200])
+            self.jobs.finish_run(run["id"], "done", "complete", result.summary, 0)
+            self.jobs.journal(job["id"], "done", f"Done: {result.summary[:200]}", task["key"])
+            self._task_done_hook(job, self.jobs.get_task(task["id"]))
+        else:
+            attempts = task["attempts"] + 1
+            if result.retry_guidance:
+                self.jobs.add_guidance(task["id"], result.retry_guidance)
+            status = T_FAILED if attempts >= task["max_attempts"] else T_PENDING
+            self.jobs.update_task(task["id"], status=status, attempts=attempts)
+            self.jobs.finish_run(run["id"], "failed", "error", result.summary, 0)
+            self.jobs.journal(job["id"], "failed" if status == T_FAILED else "retry", result.summary[:300], task["key"])
+        self._changed(job["id"])
+
+    def _review(self, job: dict, task: dict, summary: str, worker_run: dict) -> dict:
+        new_context = [i for i in self.jobs.list_context(job["id"])
+                       if i["task_key"] == task["key"] and i["created_at"] >= worker_run["started_at"]]
+        run = self.jobs.create_run(job["id"], "review", task["id"], task["attempts"] + 1)
+        session = ReviewSession(self, job, run, task)
+        self.jobs.journal(job["id"], "review", "Reviewing the result.", task["key"])
+        outcome = self._execute(session, review_request(job, task, summary, new_context))
+        res = session.result
+        if not res or res.get("kind") != "review":
+            self.jobs.finish_run(run["id"], "failed", outcome, "No verdict", session.steps)
+            self.jobs.journal(job["id"], "review", f"Review was inconclusive ({outcome}); accepting the result.",
+                              task["key"])
+            return {"passed": True, "issues_text": ""}
+        bad_ids = []
+        for raw in res.get("bad_context_ids") or []:
+            try:
+                bad_ids.append(int(str(raw).strip().lstrip("cC")))
+            except ValueError:
+                continue
+        allowed = {i["id"] for i in new_context}
+        removed = [i for i in bad_ids if i in allowed]
+        if removed:
+            self.jobs.remove_context(job["id"], removed)
+            self.jobs.journal(job["id"], "review", f"Reviewer removed unsupported context items: "
+                                                   f"{', '.join(f'c{i}' for i in removed)}", task["key"])
+        issues = res.get("issues") or []
+        issues_text = "\n".join(f"- {i.get('problem', '')}" + (f" (evidence: {i['evidence']})" if i.get("evidence") else "")
+                                for i in issues) or "- (no details given)"
+        passed = res.get("verdict") == "pass"
+        self.jobs.finish_run(run["id"], "done", "pass" if passed else "fail", issues_text, session.steps)
+        self.jobs.journal(job["id"], "review", ("Review passed." if passed else f"Review failed:\n{issues_text}")[:400],
+                          task["key"])
+        return {"passed": passed, "issues_text": issues_text}
 
     def _attempt_failed(self, job, task, run, session, outcome: str, guidance: str) -> None:
         attempts = task["attempts"] + 1

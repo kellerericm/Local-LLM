@@ -6,6 +6,7 @@ commands go through the same safety policy and approval flow as the agent's shel
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,20 +42,57 @@ def describe(check: dict) -> str:
         return f"file {check.get('path')} is valid JSON"
     if t == "command_ok":
         return f"command `{check.get('command')}` exits with code 0"
+    if t == "citations_valid":
+        return f"file {check.get('path')} cites at least {check.get('min', 1)} saved notes as [n12], all of which exist"
+    if t == "notes_for_source":
+        return f"at least {check.get('min', 1)} note(s) saved from {check.get('source')}, or the summary says it's not relevant"
     return json.dumps(check)
 
 
 def run_checks(checks: list[dict], workspace: Path, env_path: Path, guard, policy,
-               ask: Callable[[list[str], str, str], bool], cancel: threading.Event | None = None) -> list[CheckResult]:
+               ask: Callable[[list[str], str, str], bool], cancel: threading.Event | None = None,
+               notes: Callable[[], list[dict]] | None = None, summary: str = "") -> list[CheckResult]:
     results = []
     for c in checks:
         try:
+            if c.get("type") in ("citations_valid", "notes_for_source"):
+                results.append(_notes_check(c, workspace, guard, notes() if notes else [], summary))
+                continue
             results.append(_run_one(c, workspace, env_path, guard, policy, ask, cancel))
         except ApprovalPending:
             raise                   # the task parks until the user decides
         except Exception as e:  # a broken check is a failed check, never a crash
             results.append(CheckResult(c, False, f"check error: {type(e).__name__}: {e}"))
     return results
+
+
+_CITATION = re.compile(r"\[n(\d+)\]")
+_NOT_RELEVANT = re.compile(r"\b(not relevant|irrelevant|no relevant)\b", re.IGNORECASE)
+
+
+def _notes_check(c: dict, workspace: Path, guard, notes: list[dict], summary: str) -> CheckResult:
+    if c["type"] == "citations_valid":
+        p = _path(c, workspace, guard)
+        if not p.is_file():
+            return CheckResult(c, False, "file not found")
+        cited = {int(m) for m in _CITATION.findall(p.read_text(encoding="utf-8", errors="replace"))}
+        known = {n["id"] for n in notes}
+        unknown = sorted(cited - known)
+        minimum = int(c.get("min", 1))
+        if unknown:
+            return CheckResult(c, False, f"cites notes that don't exist: {', '.join(f'n{i}' for i in unknown[:10])}")
+        if len(cited) < minimum:
+            return CheckResult(c, False, f"cites {len(cited)} notes; at least {minimum} expected (format: [n12])")
+        return CheckResult(c, True, f"{len(cited)} citations, all valid")
+    # notes_for_source
+    source = str(c["source"]).replace("\\", "/")
+    count = sum(1 for n in notes if n["source"].replace("\\", "/") == source)
+    if count >= int(c.get("min", 1)):
+        return CheckResult(c, True, f"{count} notes from {source}")
+    if _NOT_RELEVANT.search(summary or ""):
+        return CheckResult(c, True, f"no notes; the task reported {source} as not relevant")
+    return CheckResult(c, False, f"no notes from {source}. Add notes with add_note, or say in the summary that it's "
+                                 "not relevant and why")
 
 
 def _path(check: dict, workspace: Path, guard) -> Path:

@@ -16,6 +16,8 @@ CHECK_TYPES = {
     "file_contains": ["path", "text"],
     "json_valid": ["path"],
     "command_ok": ["command"],
+    "citations_valid": ["path"],
+    "notes_for_source": ["source"],
 }
 
 _VAGUE = re.compile(r"\b(has|have|is|are|was|were) (been )?(read|reviewed|considered|understood|identified|analy[sz]ed|"

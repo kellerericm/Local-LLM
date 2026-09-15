@@ -23,10 +23,12 @@ DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
-PART = """Read {part} with read_file. It is part {k} of {n} of the paper "{title}" (extracted text; the original is {source}).
-Write {summary} containing, for each section that appears in this part, '### <section name>' followed by a 3-6 sentence
-summary of what it says. For each important claim relevant to the research question ({question}), call add_note with an
-exact quote copied from the text, source "{source}", and the section as location. Work only on this part."""
+PART = """Read {part} with read_file. It is part {k} of {n} of the paper "{title}" (the full paper is {source}; you
+don't need to open it). Write {summary} once, containing, for each section that appears in this part, '### <section
+name>' followed by a 3-6 sentence summary of what it says. Then, for up to 5 important claims relevant to the research
+question ({question}), call add_note with source "{part}", the section as location, and a quote copied character for
+character from {part} (one sentence or a shorter phrase is best). If a quote is rejected, copy a shorter phrase from the
+part or move on to the next claim. Work only on this part, then call complete_task."""
 
 ASSEMBLE = """Assemble the write-up of "{title}". Read the part summaries ({summaries}) and use search_notes with source
 "{source}" to see the notes saved from it. Write {md} containing:
@@ -230,7 +232,8 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
         part_keys.append(key)
         summaries.append(summary)
         tasks.append({"key": key, "parent_key": group, "title": f"Read part {k}/{n}: {p['title'][:60]}",
-                      "depends_on": [acquire_task["key"]], "params": {"paper": p["key"], "part": k},
+                      "depends_on": [acquire_task["key"]],
+                      "params": {"paper": p["key"], "part": k, "part_file": part, "paper_source": p["file_path"]},
                       "instructions": PART.format(part=part, k=k, n=n, title=p["title"], source=p["file_path"],
                                                   summary=summary, question=job["goal"]),
                       "done_when": f"{summary} exists with section summaries",

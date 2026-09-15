@@ -32,6 +32,11 @@ A failure is information, not a verdict.
   - **Also fixed:**
     - The rejection message says only the quote is checked.
     - Resending an identical rejected quote gets an explicit "copy from the closest passage" nudge.
+- **Rerun 4, 2026-09-15 07:00: quote fix confirmed (parts 1–2 done, 13 verified notes), but part 3 hit the 31-step limit twice; stopped by hand at 08:05.**
+  - **Cause:** after a rejected quote, the model opened the full paper (310 long lines, about 25k tokens, above the 20k context) to find exact wording. Context elision then dropped its own earlier work, so it rewrote the summary 5 times and looped.
+  - **Fix:**
+    - Part tasks quote from the part file they just read. A part is a verbatim slice of the paper, so add_note records the note against the paper (location "part k, section").
+    - At most 5 notes per part, write the summary once, and move on if a quote is rejected.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

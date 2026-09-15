@@ -77,7 +77,7 @@ def reader(refs=None, quote="Text of https"):
         system = msgs[0]["content"]
         part = re.search(r"Write (papers/\S+/summary-\d+\.md)", system)
         if part:
-            src = re.search(r'source "(papers/\S+\.pdf)"', system).group(1)
+            src = re.search(r'source "(papers/\S+/part-\d+\.md)"', system).group(1)
             return (call("write_file", path=part.group(1), content="### Intro\nok") +
                     call("add_note", claim="The paper's text", quote=quote, source=src))
         md = re.search(r"Write (papers/[^/\s]+\.md)", system).group(1)
@@ -138,6 +138,8 @@ def test_query_seeds_gate_rounds_convergence_and_report_phase(env_factory, works
     assert rounds[-1]["stop"].startswith("converged")
     papers = {p["title"]: p for p in env.jobs.list_papers(job["id"])}
     assert papers["Paper C"]["status"] == "skipped" and papers["Foundation One"]["cited_by_read"] == 3
+    notes = env.jobs.search_notes(job["id"], "", None, 50)
+    assert notes and all(n["source"].startswith("papers/pdf/") and n["location"].startswith("part 1") for n in notes)
     assert len(fake.downloads) == 4
     graph = (workspace / "citation_graph.md").read_text(encoding="utf-8")
     assert "Foundation One" in graph

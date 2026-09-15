@@ -103,8 +103,15 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
         return ToolResult("Note not saved: the quote doesn't appear word for word in the source. Copy the exact words "
                           "(a shorter exact quote is fine; the claim can be in your own words, only the quote is "
                           f"checked).{hint}", ok=False)
-    task_key = getattr(conv, "task", None) and conv.task["key"]
-    note = conv.jobs.add_note(conv.job["id"], _source_name(ctx, path), claim.strip(), quote.strip(), location.strip(),
+    task = getattr(conv, "task", None)
+    task_key = task and task["key"]
+    source_name = _source_name(ctx, path)
+    params = (task or {}).get("params") or {}
+    if params.get("part_file") and params.get("paper_source") and source_name == params["part_file"]:
+        # A part is a verbatim slice of the paper: record the note against the paper so later steps find it by source.
+        location = f"part {params.get('part')}" + (f", {location.strip()}" if location.strip() else "")
+        source_name = params["paper_source"]
+    note = conv.jobs.add_note(conv.job["id"], source_name, claim.strip(), quote.strip(), location.strip(),
                               tags, task_key)
     conv.runner._changed(conv.job["id"])
     return ToolResult(f"Saved note n{note['id']} (quote verified in {note['source']}). Cite it as [n{note['id']}].")

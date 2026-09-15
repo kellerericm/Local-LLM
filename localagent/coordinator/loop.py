@@ -23,7 +23,7 @@ from ..safety.paths import PathGuard
 from ..tools.registry import (ApprovalPending, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
                               validate_args)
 from . import prompts
-from .context import fit_messages
+from .context import KEEP_RECENT, OLD_TOOL_CHARS, fit_messages
 from .conversation import ChatConversation, Conversation
 
 log = logging.getLogger(__name__)
@@ -34,15 +34,21 @@ log = logging.getLogger(__name__)
 READ_ONLY_TOOLS = {"read_file", "list_dir", "glob", "grep", "read_document", "search_notes", "check_citations", "list_projects"}
 
 
-def repeat_guard(seen: dict[str, list[int]], name: str, result: ToolResult, step: int) -> ToolResult:
+def repeat_guard(seen: dict[str, list[tuple[int, int]]], name: str, result: ToolResult, step: int,
+                 pos: int) -> ToolResult:
     """Keyed on the output, not the arguments: the model varies limits and empty queries while looping. The first
-    repeat is shown with a warning; later ones are withheld and count as failures, so a loop ends in needs_help."""
+    repeat is shown with a warning; later ones are withheld and count as failures, so a loop ends in needs_help.
+    Only repeats of output the model can still see count: context fitting shortens tool results older than the last
+    KEEP_RECENT messages, and re-reading those is legitimate (dry run 8: a 7 KB outline was shortened, re-read, and
+    withheld)."""
     key = name + ":" + hashlib.sha1(result.content.encode("utf-8", "replace")).hexdigest()
     earlier = seen.setdefault(key, [])
-    earlier.append(step)
+    fully_visible = len(result.content) <= OLD_TOOL_CHARS
+    earlier[:] = [(s, p) for s, p in earlier if fully_visible or pos - p <= KEEP_RECENT]
+    earlier.append((step, pos))
     if len(earlier) == 1:
         return result
-    steps = ", ".join(str(s + 1) for s in earlier[:-1])
+    steps = ", ".join(str(s + 1) for s, _ in earlier[:-1])
     if len(earlier) == 2:
         return ToolResult(f"(This is exactly the same output you got at step {steps}; nothing has changed since. "
                           "Don't fetch it again: use it and move on.)\n" + result.content)
@@ -101,7 +107,8 @@ class Coordinator:
         self._status(conv, "running")
         failures = 0
         outcome = "done"
-        seen: dict[str, list[int]] = {}      # read-only call key -> steps it ran at, since the last change
+        seen: dict[str, list[tuple[int, int]]] = {}   # read-only output -> (step, message position), since a change
+        pos = 0                              # messages added this run: how far back a tool result is
         try:
             for step in range(max_steps):
                 if cancel.is_set():
@@ -126,6 +133,7 @@ class Coordinator:
                 calls = [{"id": f"call_{time.time_ns()}_{i}", **c} for i, c in enumerate(parsed.tool_calls)]
                 self._add(conv, "assistant", parsed.content, reasoning=parsed.reasoning or None,
                           tool_calls=calls or None, usage=usage)
+                pos += 1
 
                 if parsed.errors:
                     failures += 1
@@ -160,8 +168,9 @@ class Coordinator:
                                       name=c["name"], ok=False)
                         break
                     result = self._execute(ctx, by_name, call, settings)
+                    pos += 1
                     if call["name"] in READ_ONLY_TOOLS and result.ok:
-                        result = repeat_guard(seen, call["name"], result, step)
+                        result = repeat_guard(seen, call["name"], result, step, pos)
                     elif call["name"] not in READ_ONLY_TOOLS and result.ok:
                         seen.clear()                 # something may have changed: earlier reads are stale
                     failures = 0 if result.ok else failures + 1

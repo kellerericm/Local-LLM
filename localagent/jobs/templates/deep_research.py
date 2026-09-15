@@ -64,9 +64,13 @@ Write outline.md once:
 Then call check_citations on outline.md once, fix any ids it lists, and call complete_task (the section checks run
 automatically; don't verify them yourself)."""
 
-SECTION = """Write the report section "{heading}" to {path}, following its part of outline.md (including any '###'
-subsections). Start the file with '## {heading}'. Read outline.md and literature_digest.md; for more detail on a point,
-call search_notes with a few keywords (brief true) instead of opening the full papers/*.md write-ups. Support every
+SECTION = """Write the report section "{heading}" to {path}. Start the file with '## {heading}'. Your part of outline.md
+(follow it, including any '###' subsections; you don't need to open outline.md):
+
+{part}
+
+For an overview of the papers, read literature_digest.md; for detail on a point, call search_notes with a few keywords
+(brief true) instead of opening the full papers/*.md write-ups. Support every
 factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write the file
 once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 
@@ -295,7 +299,8 @@ def expand_report(runner, job, reason: str) -> None:
 
 def expand_sections(runner, job) -> None:
     ws = workspace_of(runner, job)
-    headings = [h.strip() for h in re.findall(r"^##\s+(.+)$", (ws / "outline.md").read_text(encoding="utf-8"), re.M)]
+    outline = (ws / "outline.md").read_text(encoding="utf-8")
+    headings = [h.strip() for h in re.findall(r"^##\s+(.+)$", outline, re.M)]
     body = [h for h in headings if h.lower() != "abstract"]
     tasks = [{"key": "write", "title": "Write the report", "instructions": "-", "done_when": "-", "depends_on": ["layout_gate"]}]
     keys = []
@@ -303,7 +308,9 @@ def expand_sections(runner, job) -> None:
         path = f"sections/{i:02d}-{slug(heading)}.md"
         keys.append(f"s{i}")
         tasks.append({"key": f"s{i}", "parent_key": "write", "title": f"Write section: {heading}", "review": True,
-                      "instructions": SECTION.format(heading=heading, path=path),
+                      # The outline part goes in the instructions, which context fitting never shortens.
+                      "instructions": SECTION.format(heading=heading, path=path,
+                                                     part=(_md_section(outline, heading) or "(no notes in the outline)")[:4000]),
                       "done_when": f"{path} exists, starts with the heading, and cites valid notes",
                       "checks": [{"type": "file_contains", "path": path, "text": f"## {heading}"},
                                  {"type": "citations_valid", "path": path}]})

@@ -222,3 +222,25 @@ def test_repeated_identical_reads_are_withheld_and_end_in_needs_help(store, sett
     assert tools[4]["ok"] and tools[4]["content"].startswith("(This is exactly the same output")
     assert not tools[6]["ok"] and tools[6]["content"].startswith("Not shown") and "alpha" not in tools[6]["content"]
     assert len(tools) == 9
+
+
+def test_rereading_a_long_output_after_it_was_shortened_is_allowed(store, settings, workspace):
+    # Dry run 8: a 7 KB outline read at step 1 was shortened by context fitting, re-read, and wrongly withheld.
+    chat = project_chat(store, workspace)
+    settings.max_steps = 20
+    (workspace / "big.md").write_text("".join(f"line {i} of the outline with some words\n" for i in range(300)))
+    for i in range(5):
+        (workspace / f"small{i}.txt").write_text(f"tiny {i}")
+    coord, backend, _ = make(store, settings, [
+        call("read_file", path="big.md", limit=400),
+        *[call("read_file", path=f"small{i}.txt") for i in range(5)],                    # other work in between
+        call("list_dir", path="."),
+        call("read_file", path="big.md", limit=400),       # long ago now: legitimately re-read
+        call("read_file", path="big.md", limit=400),       # immediately again: still visible, so warned
+        "done",
+    ])
+    assert coord.run(chat, "read things") == "done"
+    tools = [m for m in store.list_messages(chat) if m["role"] == "tool"]
+    big = [m for m in tools if "line 0 of the outline" in m["content"] or "Not shown" in m["content"]]
+    assert big[1]["ok"] and not big[1]["content"].startswith("(This is exactly")
+    assert big[2]["content"].startswith("(This is exactly the same output")

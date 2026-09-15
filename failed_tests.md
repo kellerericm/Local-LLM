@@ -24,6 +24,14 @@ A failure is information, not a verdict.
     - The citation step asks the user when no papers were read.
     - Papers over `max_parts` (default 12 parts, ~48 pages) ask before reading; that review is 53 parts.
     - Harness stdout is UTF-8.
+- **Rerun 3, 2026-09-15 05:55: acquisition worked, reading failed; stopped by hand at 06:50.**
+  - 2 papers came from Europe PMC full text, the 53-part review asked and was skipped, and 1 paper was unavailable.
+  - Then parts 1–3 of the first paper each failed 3 attempts (needs_help).
+  - **Cause, our bug:** the PMC text uses curly quotes (‘replay’) and the model typed straight ones. The verbatim check compared characters exactly, so a correct quote was rejected 5 times in a row. The model then misdiagnosed the claim wording as the problem.
+  - Replaying the run's 44 distinct attempted quotes: 0 accepted by the old check. With typography folding (quotes, dashes, ligatures, nbsp) plus "a ... b" ellipsis joins, 23 pass. The other 21 are real paraphrases and are still rejected.
+  - **Also fixed:**
+    - The rejection message says only the quote is checked.
+    - Resending an identical rejected quote gets an explicit "copy from the closest passage" nudge.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

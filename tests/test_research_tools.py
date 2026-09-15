@@ -60,6 +60,22 @@ def test_extract_pdf_docx_and_txt(tmp_path):
     assert find_quote(extract(txt).text, "working  memory holds\nabout four items")
 
 
+def test_find_quote_folds_typography_models_retype_as_ascii():
+    # Dry run 3: the PMC text had curly quotes and the model typed straight ones; five correct quotes were rejected.
+    text = "Such ‘replay’ has been proposed as a mechanism — “necessary” for sharp wave‐ripple ﬁring…"
+    assert find_quote(text, "Such 'replay' has been proposed as a mechanism - \"necessary\" for sharp wave-ripple firing...")
+    assert not find_quote(text, "Such 'replay' has been disproved")
+
+
+def test_find_quote_allows_ellipsis_between_verbatim_pieces():
+    text = "It was during these sharp wave ripples that activity increased [2]. A decade passed before the first " \
+           "demonstration that place cells are reactivated."
+    assert find_quote(text, "during these sharp wave ripples that activity increased... the first demonstration that place cells")
+    assert not find_quote(text, "the first demonstration that place cells ... during these sharp wave ripples")   # order
+    assert not find_quote(text, "during these sharp wave ripples ... activity decreased sharply")
+    assert not find_quote(text, "... ok ...")
+
+
 def test_find_quote_tolerates_pdf_hyphenation():
     text = "long-term poten-\ntiation strengthens synapses"
     assert find_quote(text, "long-term potentiation strengthens synapses")

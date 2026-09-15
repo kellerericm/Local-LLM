@@ -90,16 +90,50 @@ def extract(path: Path, cache_dir: Path | None = None) -> ExtractedText:
     return ExtractedText(path, text, pages, warning)
 
 
+_TYPOGRAPHY = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'", "`": "'", "´": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"', "«": '"', "»": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-",
+    " ": " ", " ": " ", " ": " ", "​": "", "­": "",
+    "ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "…": "...",
+})
+
+
+def normalize_quote(s: str) -> str:
+    """Lowercase, collapse whitespace, and fold typographic variants (curly quotes, dashes, ligatures) that models
+    retype as plain ASCII."""
+    return normalize_ws(s.translate(_TYPOGRAPHY)).lower()
+
+
 def find_quote(text: str, quote: str) -> bool:
-    """Whitespace- and case-insensitive containment, also tolerant of PDF hyphenation at line breaks."""
-    q = normalize_ws(quote).lower()
+    """Whitespace-, case-, and typography-insensitive containment, also tolerant of PDF hyphenation at line breaks."""
+    q = re.sub(r"^(?:\.\.\.\s*)+|(?:\s*\.\.\.)+$", "", normalize_quote(quote)).strip()
     if len(q) < 8:
         return False
-    t = normalize_ws(text).lower()
-    if q in t:
-        return True
-    dehyphenated = normalize_ws(re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)).lower()
-    return q in dehyphenated
+    flat = normalize_quote(text)
+    dehyphenated = normalize_quote(re.sub(r"(\w)[-‐­]\s*\n\s*(\w)", r"\1\2", text))
+    pieces = [p.strip(" .,;") for p in re.split(r"\.\.\.|\[\s*\.\.\.\s*\]", q)]
+    if len(pieces) > 1:                      # "a ... b": each piece verbatim, in order, within a short span
+        if any(len(p) < 8 for p in pieces if p) or not all(pieces):
+            return False
+        return _in_order(flat, pieces) or _in_order(dehyphenated, pieces)
+    return q in flat or q in dehyphenated
+
+
+def _in_order(text: str, pieces: list[str], max_gap: int = 600) -> bool:
+    start = text.find(pieces[0])
+    while start != -1:
+        pos, ok = start + len(pieces[0]), True
+        for piece in pieces[1:]:
+            nxt = text.find(piece, pos)
+            if nxt == -1 or nxt - pos > max_gap:
+                ok = False
+                break
+            pos = nxt + len(piece)
+        if ok:
+            return True
+        start = text.find(pieces[0], start + 1)
+    return False
 
 
 def closest_snippet(text: str, quote: str, width: int = 160) -> str | None:

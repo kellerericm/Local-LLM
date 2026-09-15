@@ -93,8 +93,16 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
     if not find_quote(text, quote):
         near = closest_snippet(text, quote)
         hint = f" The closest passage is: \"{near}\"" if near else ""
+        tried = getattr(conv, "rejected_quotes", None)
+        if tried is None:
+            tried = conv.rejected_quotes = set()
+        if quote.strip() in tried:
+            hint += (" You already sent this exact quote and it was rejected; resending it won't work. Copy a phrase "
+                     "character for character from the closest passage above, or skip this note.")
+        tried.add(quote.strip())
         return ToolResult("Note not saved: the quote doesn't appear word for word in the source. Copy the exact words "
-                          f"(a shorter exact quote is fine).{hint}", ok=False)
+                          "(a shorter exact quote is fine; the claim can be in your own words, only the quote is "
+                          f"checked).{hint}", ok=False)
     task_key = getattr(conv, "task", None) and conv.task["key"]
     note = conv.jobs.add_note(conv.job["id"], _source_name(ctx, path), claim.strip(), quote.strip(), location.strip(),
                               tags, task_key)

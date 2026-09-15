@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ..jobs.models import ACTIVE_JOB_STATUSES, AWAITING_APPROVAL, DEFAULT_BUDGET
 from ..jobs.planner import lint_plan, normalize_plan
+from ..jobs.scratchpad import CONTEXT_CHAR_LIMIT, ITEM_CHAR_LIMIT, context_chars
 
 ALLOWED_PERMISSIONS = {"cmd:network", "cmd:package-install", "cmd:process-control"}
 
@@ -39,6 +40,10 @@ class FeedbackIn(BaseModel):
 
 class PlanIn(BaseModel):
     tasks: list[dict]
+
+
+class ContextIn(BaseModel):
+    text: str
 
 
 def _budget(b: dict | None) -> dict:
@@ -95,6 +100,7 @@ def register(app: FastAPI, rt) -> None:
     def get_job(job_id: str):
         job = job_or_404(job_id)
         return {"job": job, "tasks": jobs.list_tasks(job_id), "journal": jobs.list_journal(job_id, limit=300),
+                "context": jobs.list_context(job_id), "context_limit": CONTEXT_CHAR_LIMIT,
                 "runs": jobs.list_runs(job_id),
                 "pending_approvals": [a for a in rt.approvals.pending() if a.get("job_id") == job_id]}
 
@@ -169,6 +175,29 @@ def register(app: FastAPI, rt) -> None:
         jobs.update_job(job_id, status=AWAITING_APPROVAL, status_reason="Review and approve the plan")
         jobs.journal(job_id, "plan", "Plan edited by the user.")
         return runner._changed(job_id)
+
+    @app.post("/api/jobs/{job_id}/context")
+    def add_context(job_id: str, body: ContextIn):
+        job_or_404(job_id)
+        text = body.text.strip()
+        if not text:
+            raise HTTPException(400, "Empty note")
+        if len(text) > ITEM_CHAR_LIMIT:
+            raise HTTPException(400, f"Keep each note under {ITEM_CHAR_LIMIT} characters")
+        if context_chars(jobs.list_context(job_id)) + len(text) > CONTEXT_CHAR_LIMIT:
+            raise HTTPException(400, "The scratchpad context is full; remove something first")
+        item = jobs.add_context(job_id, text, "user")
+        jobs.journal(job_id, "context", f"User added to the scratchpad: {text}")
+        runner._changed(job_id)
+        return item
+
+    @app.delete("/api/jobs/{job_id}/context/{item_id}")
+    def remove_context(job_id: str, item_id: int):
+        job_or_404(job_id)
+        if not jobs.remove_context(job_id, [item_id]):
+            raise HTTPException(404, "No such note")
+        runner._changed(job_id)
+        return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/tasks/{task_id}/retry")
     def retry_task(job_id: str, task_id: str):

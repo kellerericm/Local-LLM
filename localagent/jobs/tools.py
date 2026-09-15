@@ -29,6 +29,47 @@ def fail_task(ctx: ToolContext, reason: str, what_would_help: str = "") -> ToolR
     return ToolResult("Recorded. Thank you for being clear about it.", end_turn=True)
 
 
+def update_context(ctx: ToolContext, add: list[str] | None = None, remove: list[str] | None = None) -> ToolResult:
+    from .scratchpad import CONTEXT_CHAR_LIMIT, ITEM_CHAR_LIMIT, context_chars, render_context
+
+    conv = ctx.conversation
+    jobs, job_id = conv.jobs, conv.job["id"]
+    add = [a.strip() for a in (add or []) if a and a.strip()]
+    too_long = [a for a in add if len(a) > ITEM_CHAR_LIMIT]
+    if too_long:
+        return ToolResult(f"Context items must be at most {ITEM_CHAR_LIMIT} characters each; split or shorten: "
+                          f"{too_long[0][:80]}…", ok=False)
+    ids = []
+    for r in remove or []:
+        try:
+            ids.append(int(str(r).strip().lstrip("cC")))
+        except ValueError:
+            return ToolResult(f"Unknown context item id {r!r}; use ids like c12 from the scratchpad.", ok=False)
+    current = [i for i in jobs.list_context(job_id) if i["id"] not in ids]
+    if context_chars(current) + sum(len(a) for a in add) > CONTEXT_CHAR_LIMIT:
+        return ToolResult(f"The context would exceed {CONTEXT_CHAR_LIMIT} characters. Consolidate first: remove items "
+                          "that are outdated or merge related ones (remove=[ids], add=[merged text]). Current context:\n"
+                          + render_context(jobs.list_context(job_id)), ok=False)
+    removed = jobs.remove_context(job_id, ids) if ids else 0
+    task_key = getattr(conv, "task", None) and conv.task["key"]
+    for a in add:
+        jobs.add_context(job_id, a, "agent", task_key)
+    conv.runner._changed(job_id)
+    return ToolResult(f"Context updated (+{len(add)}, -{removed}). Now:\n" + render_context(jobs.list_context(job_id)))
+
+
+def update_checklist(ctx: ToolContext, items: list[dict]) -> ToolResult:
+    from .scratchpad import render_checklist
+
+    conv = ctx.conversation
+    checklist = [{"text": str(i["text"]).strip()[:200], "done": bool(i.get("done"))} for i in items if str(i.get("text", "")).strip()]
+    conv.jobs.update_task(conv.task["id"], checklist=checklist)
+    conv.task["checklist"] = checklist
+    conv.runner._changed(conv.job["id"])
+    done = sum(1 for i in checklist if i["done"])
+    return ToolResult(f"Checklist saved ({done}/{len(checklist)} done):\n{render_checklist(checklist)}")
+
+
 def job_ask_user(ctx: ToolContext, question: str) -> ToolResult:
     ctx.conversation.result = {"kind": "ask", "question": question.strip()}
     return ToolResult("Your question was sent to the user. This task will wait for the answer; other tasks continue.",
@@ -82,6 +123,25 @@ FAIL_TASK = Tool(
     {"type": "object", "properties": {"reason": {"type": "string", "minLength": 5},
                                       "what_would_help": {"type": "string"}}, "required": ["reason"]},
     fail_task, "job")
+
+UPDATE_CONTEXT = Tool(
+    "update_context",
+    "Edit the job scratchpad's Context: facts, decisions, file locations, constraints, and dead ends that later tasks "
+    "will need (e.g. 'Baseline score is 3.01', 'Degree-5 polynomial overfits; don't retry'). Not for progress; the "
+    "task list tracks that. Add short items; remove outdated ones by id (c12). If it's full, merge items.",
+    {"type": "object", "properties": {
+        "add": {"type": "array", "items": {"type": "string"}, "description": "new items, one fact each"},
+        "remove": {"type": "array", "items": {"type": "string"}, "description": "ids of items to remove, e.g. c3"}}},
+    update_context, "job")
+
+UPDATE_CHECKLIST = Tool(
+    "update_checklist",
+    "Write or update your checklist for this task: its sub-steps, each marked done or not. It's saved immediately and "
+    "shown to any later attempt (after a retry, pause, or restart), so tick items off as soon as they're done.",
+    {"type": "object", "properties": {"items": {"type": "array", "items": {
+        "type": "object", "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}},
+        "required": ["text", "done"]}}}, "required": ["items"]},
+    update_checklist, "job")
 
 JOB_ASK_USER = Tool(
     "ask_user",

@@ -23,16 +23,16 @@ Rules for a good plan:
 - Max 3 levels deep, max 8 subtasks per parent, at most 60 executable tasks.
 
 You may look around the workspace first (list_dir, glob, grep, read_file) so the plan names real files.
-If the goal is too unclear to plan, use ask_user. Then call propose_plan. If it's rejected, fix the listed
-problems and call it again with the whole plan."""
+Record what every task will need to know in the job scratchpad with update_context: where the inputs are,
+constraints from the goal, key facts you found. If the goal is too unclear to plan, use ask_user. Then call
+propose_plan. If it's rejected, fix the listed problems and call it again with the whole plan."""
 
 TASK_BLOCK = """
 # You are doing one task of a longer job
 **Job:** {title}
 **Goal:** {goal}
 
-## Plan (▶ = your task)
-{outline}
+{scratchpad}
 
 ## Your task: [{key}] {task_title}
 **Instructions:** {instructions}
@@ -42,9 +42,14 @@ TASK_BLOCK = """
 {guidance}
 ## How to work on a job task
 - Do only this task. Other tasks run separately, in their own sessions.
-- Later tasks see only your summary and the files you create, not this conversation. Put results in files in the
-  workspace, and mention their paths in your summary.
-- Check what already exists before you start: an earlier attempt may have done part of the work.
+- Start from the scratchpad. If your checklist already has ticked items, an earlier attempt did them: verify
+  quickly and continue from the first unticked item instead of starting over.
+- For anything with more than one step, write your checklist first (update_checklist) and tick items off as soon as
+  each is done. It survives retries, pauses, and restarts.
+- When you learn something later tasks will need (a key number, a decision, where a file is, an approach that
+  failed), record it with update_context. Keep items short; remove ones that become wrong.
+- Later tasks see only the scratchpad, your summary, and the files you create, not this conversation. Put results
+  in files in the workspace, and mention their paths in your summary.
 - When the task is finished and you've verified it, call **complete_task** with a short summary.
 - If you can't finish it, call **fail_task** and say why and what would help. That's a useful outcome, not a failure
   of yours.

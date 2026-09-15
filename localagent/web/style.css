@@ -192,6 +192,15 @@ details.advanced summary { cursor: pointer; color: var(--muted); margin-bottom: 
 .job-journal time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 .transcript { max-height: 60vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
 .perm-list { display: grid; gap: 4px; }
+.scratchpad .hint { margin: 0 0 6px; }
+.context-items { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
+.context-items li { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.context-items .ctext { flex: 1; }
+.context-items .corigin { font-size: 11.5px; color: var(--muted); }
+.context-add { display: flex; gap: 8px; }
+.context-add input { flex: 1; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.checklist { list-style: none; padding-left: 0 !important; }
+.checklist li.done { color: var(--muted); }
 @media (max-width: 900px) { .td-row { grid-template-columns: 1fr; } .job-budget { grid-template-columns: auto 1fr auto; } }
 
 /* Tasks */

@@ -118,6 +118,7 @@ function renderJob() {
       h("section", { class: "job-goal" }, h("div", { class: "section-label" }, "Goal"), h("p", {}, job.goal)),
       budgetLine(job),
       questionsPanel(job, tasks),
+      scratchpadPanel(job, J.data.context || [], J.data.context_limit || 6000),
       h("section", {}, h("div", { class: "section-label" }, `Plan${tasks.length ? ` · ${planCounts(tasks)}` : ""}`),
         tasks.length ? planTree(job, tasks, runs) : h("p", { class: "muted" },
           job.status === "planning" ? "The agent is writing a plan. You'll review it before anything runs." : "No plan.")),
@@ -216,6 +217,28 @@ function questionsPanel(job, tasks) {
     }));
 }
 
+function scratchpadPanel(job, items, limit) {
+  const used = items.reduce((n, i) => n + i.text.length, 0);
+  const input = h("input", { type: "text", placeholder: "Add a note every task should know (e.g. a constraint or where a file is)…" });
+  const add = async () => {
+    if (!input.value.trim()) return;
+    try { await api("POST", `/api/jobs/${job.id}/context`, { text: input.value.trim() }); loadJob(); }
+    catch (e) { toast(e.message); }
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
+  return h("section", { class: "scratchpad" },
+    h("div", { class: "section-label" }, `Scratchpad context · ${used}/${limit} characters`),
+    h("p", { class: "hint" }, "The job's working memory. Every task reads it first; the agent adds facts, decisions, and dead ends as it learns them."),
+    items.length ? h("ul", { class: "context-items" }, items.map((i) => h("li", {},
+      h("span", { class: "tkey" }, `c${i.id}`),
+      h("span", { class: "ctext" }, i.text),
+      h("span", { class: "corigin" }, i.author === "user" ? "you" : (i.task_key ? `[${i.task_key}]` : "planner")),
+      h("button", { class: "icon-btn small", title: "Remove", onclick: async () => {
+        try { await api("DELETE", `/api/jobs/${job.id}/context/${i.id}`); loadJob(); } catch (e) { toast(e.message); }
+      } }, "✕")))) : h("p", { class: "muted" }, "Empty so far."),
+    h("div", { class: "context-add" }, input, h("button", { class: "btn small", onclick: add }, "Add")));
+}
+
 function planTree(job, tasks, runs) {
   const kids = new Map();
   for (const t of tasks) {
@@ -249,6 +272,8 @@ function taskDetails(job, t, runs) {
     row("Instructions", t.instructions),
     row("Done when", t.done_when),
     t.checks.length ? row("Checks", h("ul", {}, t.checks.map((c) => h("li", {}, `${c.type}: ${c.path || c.command || ""}${c.text ? ` contains "${c.text}"` : ""}`)))) : null,
+    t.checklist && t.checklist.length ? row("Checklist", h("ul", { class: "checklist" }, t.checklist.map((c) =>
+      h("li", { class: c.done ? "done" : "" }, `${c.done ? "☑" : "☐"} ${c.text}`)))) : null,
     row("Result", t.result_summary),
     row("Waiting on you", t.question),
     t.guidance.length ? row("Notes for next attempt", h("ul", {}, t.guidance.map((g) => h("li", { class: "guidance" }, g)))) : null,

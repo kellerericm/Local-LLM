@@ -8,7 +8,8 @@ from ..coordinator.conversation import Conversation
 from ..tools.registry import ApprovalPending, Tool, ToolRegistry
 from . import prompts
 from .checks import describe
-from .tools import COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PLAN
+from .scratchpad import render_block
+from .tools import COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PLAN, UPDATE_CHECKLIST, UPDATE_CONTEXT
 
 READ_ONLY_TOOLS = ("read_file", "list_dir", "glob", "grep")
 
@@ -90,29 +91,36 @@ class JobSession(Conversation):
         return reason
 
 
+    def scratchpad(self, ctx, current: dict | None = None) -> str:
+        """Rebuilt from the database for every model step, so updates show up immediately."""
+        return render_block(self.jobs.list_tasks(self.job["id"]), self.jobs.list_context(self.job["id"]),
+                            prompts.workspace_listing(ctx.workspace), current)
+
+
 class PlanSession(JobSession):
     max_steps = 20
 
     def system_prompt(self, ctx) -> str:
-        return base_prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project) + "\n" + prompts.PLAN_BLOCK
+        return (base_prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project) + "\n"
+                + prompts.PLAN_BLOCK + "\n\n" + self.scratchpad(ctx))
 
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
         available = {t.name: t for t in registry.available(ctx)}
-        return [available[n] for n in READ_ONLY_TOOLS if n in available] + [PROPOSE_PLAN, JOB_ASK_USER]
+        return [available[n] for n in READ_ONLY_TOOLS if n in available] + [UPDATE_CONTEXT, PROPOSE_PLAN, JOB_ASK_USER]
 
 
 class TaskSession(JobSession):
-    def __init__(self, runner, job: dict, run: dict, task: dict, outline: str, max_steps: int):
+    def __init__(self, runner, job: dict, run: dict, task: dict, max_steps: int):
         super().__init__(runner, job, run)
         self.task = task
-        self.outline = outline
         self.max_steps = max_steps
 
     def event_fields(self) -> dict:
         return {**super().event_fields(), "task_key": self.task["key"]}
 
     def system_prompt(self, ctx) -> str:
-        t = self.task
+        t = self.jobs.get_task(self.task["id"]) or self.task
+        self.task = t
         checks = ""
         if t["checks"]:
             checks = "\n**Automatic checks when you call complete_task:**\n" + "\n".join(
@@ -120,7 +128,8 @@ class TaskSession(JobSession):
         guidance = ""
         if t["guidance"]:
             guidance = "\n## Notes from earlier attempts and the user\n" + "\n".join(f"- {g}" for g in t["guidance"]) + "\n"
-        block = prompts.TASK_BLOCK.format(title=self.job["title"], goal=self.job["goal"], outline=self.outline,
+        block = prompts.TASK_BLOCK.format(title=self.job["title"], goal=self.job["goal"],
+                                          scratchpad=self.scratchpad(ctx, t),
                                           key=t["key"], task_title=t["title"], instructions=t["instructions"] or "-",
                                           done_when=t["done_when"] or "-", checks=checks, guidance=guidance)
         return base_prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project) + "\n" + block
@@ -128,4 +137,4 @@ class TaskSession(JobSession):
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
         # The plan replaces the chat task list; job ask_user replaces the chat one.
         base = [t for t in registry.available(ctx) if t.name not in ("update_tasks", "ask_user")]
-        return base + [COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER]
+        return base + [UPDATE_CHECKLIST, UPDATE_CONTEXT, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER]

@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS run_messages(
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_run_messages_run ON run_messages(run_id, id);
+CREATE TABLE IF NOT EXISTS scratch_items(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    author TEXT NOT NULL,
+    task_key TEXT,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS journal(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -264,6 +272,21 @@ class JobStore:
     def list_run_messages(self, run_id: str) -> list[dict]:
         return [self.s._message_out(r) for r in
                 self.s._all("SELECT * FROM run_messages WHERE run_id=? ORDER BY id", (run_id,))]
+
+    # -- scratchpad context ----------------------------------------------------------
+    def list_context(self, job_id: str) -> list[dict]:
+        return self.s._all("SELECT * FROM scratch_items WHERE job_id=? ORDER BY id", (job_id,))
+
+    def add_context(self, job_id: str, text: str, author: str, task_key: str | None = None) -> dict:
+        cur = self.s._exec("INSERT INTO scratch_items(job_id,text,author,task_key,created_at) VALUES(?,?,?,?,?)",
+                           (job_id, text, author, task_key, time.time()))
+        return self.s._one("SELECT * FROM scratch_items WHERE id=?", (cur.lastrowid,))
+
+    def remove_context(self, job_id: str, item_ids: list[int]) -> int:
+        removed = 0
+        for iid in item_ids:
+            removed += self.s._exec("DELETE FROM scratch_items WHERE job_id=? AND id=?", (job_id, int(iid))).rowcount
+        return removed
 
     # -- journal -----------------------------------------------------------------
     def journal(self, job_id: str, kind: str, text: str, task_key: str | None = None) -> dict:

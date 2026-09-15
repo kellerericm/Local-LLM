@@ -141,7 +141,7 @@ def test_planning_session_retries_after_lint_and_waits_for_approval(env_factory,
     assert "not accepted" in tool_msgs[1]["content"]
     # Planning tools are read-only plus the job tools.
     tool_names = {t["function"]["name"] for t in env.backend.calls[0]["tools"]}
-    assert tool_names == {"read_file", "list_dir", "glob", "grep", "propose_plan", "ask_user"}
+    assert tool_names == {"read_file", "list_dir", "glob", "grep", "update_context", "propose_plan", "ask_user"}
     folder = workspace / "jobs" / job["slug"]
     assert (folder / "README.md").exists() and "LocalAgent job" in (folder / "README.md").read_text(encoding="utf-8")
     assert "[t2] Summarize" in (folder / "plan.md").read_text(encoding="utf-8")
@@ -433,6 +433,82 @@ def test_plan_request_lists_workspace(env_factory, workspace):
     env.runner._tick()
     first_user = next(m for m in env.backend.calls[0]["messages"] if m["role"] == "user")["content"]
     assert "- src/" in first_user and "- data.csv" in first_user and "jobs/" not in first_user
+
+
+# ---------------------------------------------------------------- scratchpad
+def test_planner_context_reaches_every_task_and_mirror(env_factory, workspace):
+    env = env_factory([
+        call("update_context", add=["Inputs live in data.txt at the workspace root", "Never edit evaluate.py"]),
+        call("propose_plan", tasks=GOOD_PLAN[:1]),
+        lambda msgs: (call("write_file", path="data.txt", content="1")
+                      if "Never edit evaluate.py" in msgs[0]["content"] else "context missing from prompt"),
+        call("complete_task", summary="Wrote data.txt."),
+    ])
+    job = env.job()
+    env.runner._tick()
+    env.runner.approve_plan(job["id"])
+    env.runner._tick()
+    assert env.task(job["id"], "t1")["status"] == "done"
+    items = env.jobs.list_context(job["id"])
+    assert [i["author"] for i in items] == ["agent", "agent"] and items[0]["task_key"] is None
+    text = (workspace / "jobs" / env.jobs.get_job(job["id"])["slug"] / "scratchpad.md").read_text(encoding="utf-8")
+    assert "Never edit evaluate.py" in text and "[x] [t1] Write data file" in text
+
+
+def test_context_tool_removes_and_enforces_cap(env_factory):
+    from localagent.jobs.scratchpad import CONTEXT_CHAR_LIMIT
+    env = env_factory([
+        call("update_context", add=["old fact"]),
+        lambda msgs: call("update_context", remove=["c1"], add=["new fact"]),
+        call("update_context", add=["x" * 399] * (CONTEXT_CHAR_LIMIT // 399 + 1)),
+        call("update_context", add=["y" * 500]),
+        call("fail_task", reason="just testing the scratchpad"),
+    ])
+    job = env.job()
+    env.plan(job["id"], plan=GOOD_PLAN[:1])
+    env.runner._tick()
+    assert [i["text"] for i in env.jobs.list_context(job["id"])] == ["new fact"]
+    run = env.jobs.list_runs(job["id"])[-1]
+    results = [m["content"] for m in env.jobs.list_run_messages(run["id"]) if m["role"] == "tool"]
+    assert "Consolidate first" in results[2] and "at most 400 characters" in results[3]
+
+
+def test_checklist_survives_interruption_and_is_shown_on_resume(env_factory):
+    holder = {}
+
+    def tick_then_pause(msgs):
+        holder["runner"].pause(holder["job_id"])
+        return call("update_checklist", items=[{"text": "Write data.txt", "done": True},
+                                               {"text": "Verify line count", "done": False}])
+
+    def resumed(msgs):
+        system = msgs[0]["content"]
+        assert "[x] Write data.txt" in system and "[ ] Verify line count" in system, system[-800:]
+        return call("write_file", path="data.txt", content="1\n2\n3\n")
+
+    env = env_factory([tick_then_pause, resumed, call("complete_task", summary="Verified and done.")])
+    holder["runner"] = env.runner
+    job = env.job()
+    holder["job_id"] = job["id"]
+    env.plan(job["id"], plan=GOOD_PLAN[:1])
+    env.runner._tick()
+    t1 = env.task(job["id"], "t1")
+    assert t1["status"] == "pending" and t1["checklist"][0]["done"] is True
+    env.runner.resume(job["id"])
+    env.runner._tick()
+    assert env.task(job["id"], "t1")["status"] == "done"
+
+
+def test_context_api(settings, workspace):
+    with TestClient(create_app(settings, EchoBackend(), run_jobs=False)) as client:
+        project = client.post("/api/projects", json={"name": "P", "workspace_path": str(workspace)}).json()
+        job = client.post("/api/jobs", json={"project_id": project["id"], "title": "J", "goal": "g"}).json()
+        item = client.post(f"/api/jobs/{job['id']}/context", json={"text": "Reports go in D:/Reports"}).json()
+        detail = client.get(f"/api/jobs/{job['id']}").json()
+        assert detail["context"][0]["author"] == "user" and detail["context_limit"] > 0
+        assert client.post(f"/api/jobs/{job['id']}/context", json={"text": "z" * 500}).status_code == 400
+        assert client.delete(f"/api/jobs/{job['id']}/context/{item['id']}").status_code == 200
+        assert client.get(f"/api/jobs/{job['id']}").json()["context"] == []
 
 
 # ---------------------------------------------------------------- API

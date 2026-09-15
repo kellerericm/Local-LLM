@@ -66,9 +66,14 @@ LocalAgent is an AI agent that runs entirely on your computer. You give it tasks
 - **The plan tree.** Click a task for its instructions, *done when*, checks, results, notes carried between attempts, and transcripts.
 - **The journal:** a timeline of what happened and why.
 
+**The scratchpad: the job's working memory.** Every task reads it before doing anything:
+- **Context:** short notes about facts, decisions, where files are, and approaches that didn't work. The agent adds them as it learns, and you can add or remove notes in the job view. It has a size cap; when full, the agent is asked to merge or drop outdated notes.
+- **Task list:** the plan with checkboxes: `[x]` done (with a one-line result), `[>]` current, `[ ]` to do, `[!]` failed, `[?]` waiting on you.
+- **Each task's checklist:** its own sub-steps, ticked off as it goes. If a task is paused, stopped, retried, or the app restarts, the next attempt sees exactly which steps were finished and continues from there. Open a task in the plan tree to see its checklist.
+
 **Files it creates.** Every job gets a folder at `<workspace>/jobs/<job-name>/`:
 - `README.md` explains what the folder is.
-- `job.md`, `plan.md`, and `journal.md` are readable copies of the job's status, plan, and timeline, kept up to date.
+- `job.md`, `plan.md`, `journal.md`, and `scratchpad.md` are readable copies of the job's status, plan, timeline, and working memory, kept up to date.
 
 The actual work lands in the workspace itself. Deleting a job in the app never deletes files.
 

@@ -116,6 +116,10 @@ def main():
             note("answered question", question=q)
         elif status in ("done", "failed", "cancelled") or (status == "paused" and killed):
             break
+        # Play the user for approval pop-ups too: allow once, and record what was asked.
+        for a in d.get("pending_approvals", []):
+            c.post(f"/api/approvals/{a['id']}", json={"decision": "once"})
+            note("approved request", summary=a["summary"], keys=a["keys"])
 
         # Kill the server once: after at least one task finished and another has been running a while.
         if not killed and any(t["status"] == "done" for t in tasks):
@@ -140,7 +144,9 @@ def main():
         "killed_and_restarted": killed,
         "final_status": d["job"]["status"], "status_reason": d["job"].get("status_reason"),
         "usage": d["job"]["usage"],
-        "tasks": [{k: t[k] for k in ("key", "title", "status", "attempts", "result_summary", "guidance")} for t in d["tasks"]],
+        "tasks": [{k: t[k] for k in ("key", "title", "status", "attempts", "result_summary", "guidance", "checklist")}
+                  for t in d["tasks"]],
+        "context": [f"c{i['id']} ({i['author']}/{i.get('task_key')}): {i['text']}" for i in d.get("context", [])],
         "runs": [{k: r[k] for k in ("kind", "task_id", "attempt", "status", "outcome", "steps")} for r in d["runs"]],
         "interrupted_runs": sum(1 for r in d["runs"] if r["status"] == "interrupted"),
         "journal": [f"[{e.get('task_key') or '-'}] {e['text']}" for e in d["journal"]],

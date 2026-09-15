@@ -21,7 +21,7 @@ from .mirrors import write_mirrors
 from .models import (ACTIVE_JOB_STATUSES, AWAITING_APPROVAL, CANCELLED, DONE, FAILED, PAUSED, PLANNING, RUNNING,
                      T_DONE, T_FAILED, T_FINISHED, T_PENDING, T_RUNNING, T_SKIPPED, T_WAITING, TERMINAL_JOB_STATUSES,
                      WAITING_USER, JobStore)
-from .planner import leaves, next_ready_leaf, outline
+from .planner import leaves, next_ready_leaf
 from .sessions import JobApprover, PlanSession, TaskSession
 
 log = logging.getLogger(__name__)
@@ -444,7 +444,7 @@ class JobRunner:
             1, int(job["budget"].get("max_steps") or 10**6) - job["usage"].get("steps", 0))
         # +1 so an exhausted budget is caught at a break point (pause) rather than as a step-limit failure.
         max_steps = min(TASK_MAX_STEPS, remaining + 1) if remaining else TASK_MAX_STEPS
-        session = TaskSession(self, job, run, task, outline(tasks, task["key"]), max_steps)
+        session = TaskSession(self, job, run, task, max_steps)
         outcome = self._execute(session, prompts.task_start(task))
         res = session.result
         task = self.jobs.get_task(task["id"])

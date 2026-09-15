@@ -30,18 +30,23 @@ question ({question}), call add_note with source "{part}", the section as locati
 character from {part} (one sentence or a shorter phrase is best). If a quote is rejected, copy a shorter phrase from the
 part or move on to the next claim. Work only on this part, then call complete_task."""
 
-ASSEMBLE = """Assemble the write-up of "{title}". Read the part summaries ({summaries}) and use search_notes with source
-"{source}" to see the notes saved from it. Write {md} containing:
+ASSEMBLE = """Assemble the write-up of "{title}". Steps, each done once:
+1. Read the part summaries: {summaries}.
+2. Call search_notes once with source "{source}", brief true, limit 50, to list the notes saved from this paper.
+3. Write {md} containing:
 - '# {title}'
 - '## Section summaries': the part summaries in order, lightly edited into one flow
-- '## Key claims': bullets for the paper's most important claims, each citing a saved note like [n12]
+- '## Key claims': 5-10 bullets for the paper's most important claims, each citing a note from step 2 like [n12]
 - '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the
   research question: {question}
-{references}"""
+4. {references}
+5. Call complete_task. Its checks (sections present, citations valid) run automatically; you don't need to verify
+   them yourself. If {md} already exists from an earlier attempt, read it once, fix what's missing, and go to step 5."""
 
-REFS_FROM_FILE = ("Then read {refs} and call record_references with its entries (title, first author, year, and DOI or "
+REFS_FROM_FILE = ("Read {refs} and call record_references with its entries (title, first author, year, and DOI or "
                   "arXiv id when shown).")
 REFS_NONE_FOUND = "No reference list was found in the text; call record_references with an empty list."
+REFS_KNOWN = "The reference list is already known from the scholarly index; skip this step."
 
 PART_CHARS = 12_000
 
@@ -240,7 +245,7 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
                       "checks": [{"type": "file_contains", "path": summary, "text": "### "}]})
     md = paper_md(p["key"])
     if p["meta_references"]:
-        refs = "The reference list is already known from the scholarly index; don't record references."
+        refs = REFS_KNOWN
     elif prov.get("references_file"):
         refs = REFS_FROM_FILE.format(refs=f"{folder}/references.txt")
     else:

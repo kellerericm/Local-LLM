@@ -37,6 +37,15 @@ A failure is information, not a verdict.
   - **Fix:**
     - Part tasks quote from the part file they just read. A part is a verbatim slice of the paper, so add_note records the note against the paper (location "part k, section").
     - At most 5 notes per part, write the summary once, and move on if a quote is rejected.
+- **Rerun 5, 2026-09-15 08:02: part fix confirmed; the paper write-up looped; harness stopped at its 90-minute default.**
+  - All 6 parts of "The Role of Hippocampal Replay in Memory and Planning" were read, with 43/43 notes verbatim. Parts 3–6 each finished on the first try in about 4 minutes.
+  - The write-up task (w0_2) hit the 31-step limit twice. It had already written the file, then alternated `search_notes` (43 notes with quotes) and `read_file` on its own output about 14 times each, with small argument changes, never calling complete_task. The big outputs overflowed context, so it kept re-fetching.
+  - **Fixes:**
+    - Coordinator repeat guard for read-only tools, keyed on identical output since the last change: the first repeat is shown with a warning, later ones are withheld and count as failures, so a loop ends in needs_help within a few steps.
+    - `search_notes(brief=true)` returns ids and claims only.
+    - The write-up instructions are numbered one-time steps and say checks run automatically on complete_task.
+  - Also noted, cosmetic: a PMC article's back matter gave an empty "## References" heading in the last part; the real list was set aside correctly.
+  - Harness: use `--minutes 600` for deep research runs.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

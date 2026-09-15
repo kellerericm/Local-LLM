@@ -7,6 +7,7 @@ The loop runs over a Conversation (conversation.py): a chat turn or a job task s
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -26,6 +27,28 @@ from .context import fit_messages
 from .conversation import ChatConversation, Conversation
 
 log = logging.getLogger(__name__)
+
+# Tools that only look at things. Repeating one of these with identical arguments, when nothing was changed since,
+# returns the same result; a small model with elided context can loop on them (dry run 5: 14 alternating
+# search_notes/read_file calls without writing anything).
+READ_ONLY_TOOLS = {"read_file", "list_dir", "glob", "grep", "read_document", "search_notes", "list_projects"}
+
+
+def repeat_guard(seen: dict[str, list[int]], name: str, result: ToolResult, step: int) -> ToolResult:
+    """Keyed on the output, not the arguments: the model varies limits and empty queries while looping. The first
+    repeat is shown with a warning; later ones are withheld and count as failures, so a loop ends in needs_help."""
+    key = name + ":" + hashlib.sha1(result.content.encode("utf-8", "replace")).hexdigest()
+    earlier = seen.setdefault(key, [])
+    earlier.append(step)
+    if len(earlier) == 1:
+        return result
+    steps = ", ".join(str(s + 1) for s in earlier[:-1])
+    if len(earlier) == 2:
+        return ToolResult(f"(This is exactly the same output you got at step {steps}; nothing has changed since. "
+                          "Don't fetch it again: use it and move on.)\n" + result.content)
+    return ToolResult(f"Not shown: this {name} call returned exactly the same output as at steps {steps}, and nothing "
+                      "has changed since. Stop re-checking and act on what you know: write the file, make the change, "
+                      "or finish (for a task, call complete_task; its checks run automatically).", ok=False)
 
 Emit = Callable[[dict], None]
 
@@ -78,6 +101,7 @@ class Coordinator:
         self._status(conv, "running")
         failures = 0
         outcome = "done"
+        seen: dict[str, list[int]] = {}      # read-only call key -> steps it ran at, since the last change
         try:
             for step in range(max_steps):
                 if cancel.is_set():
@@ -136,6 +160,10 @@ class Coordinator:
                                       name=c["name"], ok=False)
                         break
                     result = self._execute(ctx, by_name, call, settings)
+                    if call["name"] in READ_ONLY_TOOLS and result.ok:
+                        result = repeat_guard(seen, call["name"], result, step)
+                    elif call["name"] not in READ_ONLY_TOOLS and result.ok:
+                        seen.clear()                 # something may have changed: earlier reads are stale
                     failures = 0 if result.ok else failures + 1
                     self._add(conv, "tool", result.content, tool_call_id=call["id"], name=call["name"],
                               ok=result.ok)

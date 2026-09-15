@@ -197,3 +197,28 @@ def test_cancel_stops_run(store, settings, workspace):
 
     coord, _, _ = make(store, settings, [slow])
     assert coord.run(chat, "go", cancel) == "cancelled"
+
+
+def test_repeated_identical_reads_are_withheld_and_end_in_needs_help(store, settings, workspace):
+    # Dry run 5: the model alternated search_notes / read_file with slightly different arguments for 30 steps.
+    chat = project_chat(store, workspace)
+    settings.max_steps = 20
+    (workspace / "a.txt").write_text("alpha\nbeta\n")
+    coord, backend, _ = make(store, settings, [
+        call("read_file", path="a.txt"),
+        call("write_file", path="b.txt", content="x"),        # a change: earlier reads no longer count
+        call("read_file", path="a.txt", limit=100),
+        call("list_dir"),
+        call("read_file", path="a.txt", limit=200),           # same output as the read before it: warned
+        call("list_dir"),
+        call("read_file", path="a.txt"),                      # third time: withheld
+        call("list_dir"),
+        call("read_file", path="a.txt", limit=50),
+        "I kept re-reading; I need help deciding what to write.",
+    ])
+    assert coord.run(chat, "summarize a.txt") == "needs_help"
+    tools = [m for m in store.list_messages(chat) if m["role"] == "tool"]
+    assert tools[2]["ok"] and "Same" not in tools[2]["content"] and "exactly the same" not in tools[2]["content"]
+    assert tools[4]["ok"] and tools[4]["content"].startswith("(This is exactly the same output")
+    assert not tools[6]["ok"] and tools[6]["content"].startswith("Not shown") and "alpha" not in tools[6]["content"]
+    assert len(tools) == 9

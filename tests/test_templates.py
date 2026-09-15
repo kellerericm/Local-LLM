@@ -136,11 +136,12 @@ def test_reviewer_rejection_retries_and_removes_bad_context(env_factory, workspa
 
 def test_reviewer_out_of_steps_still_records_a_verdict(env_factory, workspace):
     from localagent.jobs.review import ReviewSession
-    (workspace / "a.md").write_text("Alpha fact about lakes here.")
+    (workspace / "a.md").write_text("Alpha fact about lakes here.\n" + "".join(f"line {i}\n" for i in range(40)))
     env = env_factory([
         call("add_note", claim="Alpha", quote="Alpha fact about lakes", source="a.md"),
         call("complete_task", summary="Saved the alpha note."),
-        *[call("read_file", path="a.md")] * ReviewSession.max_steps,           # reviewer dawdles
+        *[call("read_file", path="a.md", offset=i + 1, limit=1)                # reviewer dawdles (distinct reads)
+          for i in range(ReviewSession.max_steps)],
         lambda msgs: (review("fail", issues=[{"problem": "ran out of time checking"}])
                       if "out of steps" in msgs[-1]["content"] else "no final prompt"),
         call("complete_task", summary="Saved the alpha note again."),

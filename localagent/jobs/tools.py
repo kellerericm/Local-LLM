@@ -117,11 +117,13 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
     return ToolResult(f"Saved note n{note['id']} (quote verified in {note['source']}). Cite it as [n{note['id']}].")
 
 
-def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10) -> ToolResult:
+def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10, brief: bool = False) -> ToolResult:
     conv = ctx.conversation
     notes = conv.jobs.search_notes(conv.job["id"], query, source or None, limit)
     if not notes:
         return ToolResult("No matching notes." + (" Try fewer or different words." if query else ""))
+    if brief:
+        return ToolResult("\n".join(f"[n{n['id']}] ({n['location'] or n['source']}) {n['claim']}" for n in notes))
     return ToolResult("\n".join(f"[n{n['id']}] ({n['source']}{', ' + n['location'] if n['location'] else ''}) "
                                 f"{n['claim']} — \"{n['quote'][:300]}\"" for n in notes))
 
@@ -248,10 +250,11 @@ ADD_NOTE = Tool(
 
 SEARCH_NOTES = Tool(
     "search_notes",
-    "Search this job's saved notes by keywords, optionally for one source. Returns note ids, claims, and quotes.",
+    "Search this job's saved notes by keywords, optionally for one source. Returns note ids, claims, and quotes "
+    "(brief: ids, locations, and claims only, for an overview of many notes).",
     {"type": "object", "properties": {
         "query": {"type": "string"}, "source": {"type": "string"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 50}}},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "brief": {"type": "boolean"}}},
     search_notes, "job")
 
 RECORD_REFERENCES = Tool(

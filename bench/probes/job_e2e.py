@@ -103,6 +103,7 @@ def main():
     ap.add_argument("--no-kill", action="store_true")
     ap.add_argument("--template", default="generic", help="job type: generic, research_report, deep_research")
     ap.add_argument("--inputs", default="{}", help="JSON template inputs")
+    ap.add_argument("--inputs-file", default="", help="path to a JSON file with template inputs")
     ap.add_argument("--answer", default="Use your best judgment within the stated rules; no further input is available.")
     ap.add_argument("--permissions", default="", help="comma-separated job permissions, e.g. net:open-access")
     ap.add_argument("--goal", default="")
@@ -138,9 +139,15 @@ def main():
     proc = start_server(args.port, data_dir, server_log)
     note("server started", pid=proc.pid)
     c.put("/api/settings", json={"thinking_budget": 2000, "resources": {"idle_unload_minutes": 0}})
-    project = c.post("/api/projects", json={"name": wl["folder"], "workspace_path": str(ws)}).json()
+    resp = c.post("/api/projects", json={"name": wl["folder"] or "workspace", "workspace_path": str(ws)})
+    if resp.status_code != 200:
+        kill_tree(proc)
+        raise RuntimeError(f"project creation failed: {resp.text}")
+    project = resp.json()
     job = c.post("/api/jobs", json={"project_id": project["id"], "title": wl["title"], "goal": wl["goal"],
-                                    "template": args.template, "inputs": json.loads(args.inputs),
+                                    "template": args.template,
+                                    "inputs": json.loads(Path(args.inputs_file).read_text(encoding="utf-8"))
+                                    if args.inputs_file else json.loads(args.inputs),
                                     "permissions": [p for p in args.permissions.split(",") if p],
                                     "budget": {"max_hours": args.budget_hours, "max_steps": 1000,
                                                "indefinite": args.indefinite}}).json()
@@ -168,7 +175,7 @@ def main():
                                                  "depends_on")} for t in tasks]
             c.post(f"/api/jobs/{job_id}/approve")
             note("plan approved", n_tasks=len(tasks))
-        elif status == "waiting_user":
+        if status in ("running", "waiting_user"):
             for task in [t for t in tasks if t["status"] == "waiting_user" and t.get("waiting_kind") != "approval"]:
                 if task.get("waiting_kind") == "gate":
                     c.post(f"/api/jobs/{job_id}/answer", json={"text": "approve", "task_id": task["id"]})

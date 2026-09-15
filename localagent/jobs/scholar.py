@@ -29,6 +29,7 @@ class Work:
     oa_pdf_url: str | None = None
     referenced_works: list[str] = field(default_factory=list)   # OpenAlex ids (W...)
     cited_by_count: int | None = None
+    pdf_urls: list[str] = field(default_factory=list)            # every open-access PDF location OpenAlex lists
 
     def key(self) -> str:
         return work_key(self.openalex_id, self.doi, self.arxiv_id, self.title, self.year)
@@ -66,7 +67,15 @@ def work_from_openalex(d: dict) -> Work:
         (d.get("open_access") or {}).get("oa_url") or "").lower().endswith(".pdf") else None)
     if not oa_pdf and arxiv:
         oa_pdf = f"https://arxiv.org/pdf/{arxiv}"
+    pdf_urls = []
+    for loc in [best] + list(d.get("locations") or []):
+        url = (loc or {}).get("pdf_url")
+        if url and url not in pdf_urls and ((loc or {}).get("is_oa", True)):
+            pdf_urls.append(url)
+    if arxiv and f"https://arxiv.org/pdf/{arxiv}" not in pdf_urls:
+        pdf_urls.append(f"https://arxiv.org/pdf/{arxiv}")
     return Work(
+        pdf_urls=pdf_urls,
         openalex_id=_short_id(d.get("id")),
         title=d.get("display_name") or d.get("title") or "(untitled)",
         year=d.get("publication_year"),
@@ -126,8 +135,60 @@ class ScholarClient:
                 return w
         return results[0] if results and normalize_title(results[0].title).startswith(want[:40]) else None
 
+    def candidate_pdf_urls(self, paper: dict) -> list[str]:
+        """Legal open-access PDF locations for a paper, best first:
+        OpenAlex OA locations, Europe PMC (open-access full text), Semantic Scholar openAccessPdf, arXiv title match."""
+        urls: list[str] = []
+
+        def add(u):
+            if u and u not in urls:
+                urls.append(u)
+
+        oa_id = paper.get("openalex_id")
+        if oa_id:
+            try:
+                w = work_from_openalex(self._get(f"{OPENALEX}/works/{oa_id}"))
+                for u in w.pdf_urls:
+                    add(u)
+            except Exception:
+                pass
+        add(paper.get("oa_pdf_url"))
+        doi = paper.get("doi")
+        if doi:
+            try:
+                data = self._get("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+                                 {"query": f'DOI:"{doi}"', "format": "json", "resultType": "lite"})
+                for r in (data.get("resultList") or {}).get("result", []):
+                    if r.get("pmcid") and r.get("isOpenAccess") == "Y":
+                        add(f"https://europepmc.org/articles/{r['pmcid']}?pdf=render")
+            except Exception:
+                pass
+            try:
+                data = self._get(f"https://api.semanticscholar.org/graph/v1/paper/DOI:{urllib.parse.quote(doi)}",
+                                 {"fields": "openAccessPdf"})
+                add(((data or {}).get("openAccessPdf") or {}).get("url"))
+            except Exception:
+                pass
+        if paper.get("arxiv_id"):
+            add(f"https://arxiv.org/pdf/{paper['arxiv_id']}")
+        elif paper.get("title"):
+            try:
+                q = urllib.parse.quote(f'ti:"{normalize_title(paper["title"])[:150]}"')
+                req = urllib.request.Request(f"http://export.arxiv.org/api/query?search_query={q}&max_results=3",
+                                             headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    feed = r.read().decode("utf-8", errors="replace")
+                for entry in re.findall(r"<entry>(.*?)</entry>", feed, re.S):
+                    title = re.search(r"<title>(.*?)</title>", entry, re.S)
+                    ident = re.search(r"<id>https?://arxiv\.org/abs/([^<]+?)(?:v\d+)?</id>", entry)
+                    if title and ident and normalize_title(title.group(1)) == normalize_title(paper["title"]):
+                        add(f"https://arxiv.org/pdf/{ident.group(1)}")
+            except Exception:
+                pass
+        return urls
+
     def download_pdf(self, url: str, dest: Path) -> bool:
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/pdf,*/*;q=0.8"})
         with urllib.request.urlopen(req, timeout=60) as r:
             data = r.read(MAX_PDF_BYTES + 1)
         if len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):

@@ -1,7 +1,9 @@
+import re
+
 import pytest
 
 from localagent.jobs.scholar import Work, work_from_openalex, work_key
-from localagent.jobs.templates.deep_research import cfg, pdf_path
+from localagent.jobs.templates.deep_research import PART_CHARS, cfg, pdf_path, split_paper
 from localagent.safety import AutoApprover
 from test_jobs import Env, call
 from test_research_tools import make_pdf
@@ -34,7 +36,12 @@ class FakeScholar:
     def find_by_title(self, title, year=None):
         return None
 
+    def candidate_pdf_urls(self, paper):
+        return ["https://publisher.example/landing.html"] + ([paper["oa_pdf_url"]] if paper.get("oa_pdf_url") else [])
+
     def download_pdf(self, url, dest):
+        if url.endswith(".html"):                          # publisher pages return HTML, not a PDF
+            return False
         self.downloads.append(url)
         dest.parent.mkdir(parents=True, exist_ok=True)
         make_pdf(dest, [f"Text of {url}"])
@@ -60,24 +67,38 @@ def tick_until(env, job_id, predicate, limit=40):
     return predicate()
 
 
-def reader(text_for_paper):
-    """Scripted reading: write the paper summary, save a note, record no references (OpenAlex has them)."""
+def reader(refs=None, quote="Text of https"):
+    """Scripted reading. Part tasks: write the part summary and save a note. Write-up tasks: write the paper summary
+    (and record references when asked)."""
     def respond(msgs):
         system = msgs[0]["content"]
-        import re
-        md = re.search(r"Write (papers/\S+\.md)", system).group(1)
-        src = re.search(r"Read (papers/pdf/\S+\.pdf)", system).group(1)
-        return (call("write_file", path=md, content="# X\n## Section summaries\n### Intro\nok\n## Key claims\n- c [n1]\n"
-                                                    "## Value of this paper\nuseful")
-                + call("add_note", claim="The paper's text", quote="Text of https", source=src))
+        part = re.search(r"Write (papers/\S+/summary-\d+\.md)", system)
+        if part:
+            src = re.search(r'source "(papers/\S+\.pdf)"', system).group(1)
+            return (call("write_file", path=part.group(1), content="### Intro\nok") +
+                    call("add_note", claim="The paper's text", quote=quote, source=src))
+        md = re.search(r"Write (papers/[^/\s]+\.md)", system).group(1)
+        out = call("write_file", path=md, content="# X\n## Section summaries\n### Intro\nok\n## Key claims\n- c [n1]\n"
+                                                  "## Value of this paper\nuseful")
+        if "call record_references" in system:
+            out += call("record_references", references=refs.pop(0) if refs else [])
+        return out
     return respond
+
+
+def read_paper_responses(n, refs=None, quote="Text of https"):
+    """Part task (no review) then write-up task (reviewed), per paper with one part."""
+    r = reader(refs, quote)
+    out = []
+    for _ in range(n):
+        out += [r, call("complete_task", summary="Summarized the part."),
+                r, call("complete_task", summary="Wrote up the paper."), call("report_review", verdict="pass")]
+    return out
 
 
 def test_query_seeds_gate_rounds_convergence_and_report_phase(env_factory, workspace):
     fake = FakeScholar(workspace)
-    responses = []
-    for _ in range(4):                                    # A, B read in round 0 (C unavailable -> skipped); F1, F2 in round 1
-        responses += [reader(None), call("complete_task", summary="Summarized the paper."), call("report_review", verdict="pass")]
+    responses = read_paper_responses(4)                   # A, B read in round 0 (C unavailable -> skipped); F1, F2 in round 1
     env = env_factory(responses)
     env.runner.scholar = fake
     job = make_job(env)
@@ -91,7 +112,7 @@ def test_query_seeds_gate_rounds_convergence_and_report_phase(env_factory, works
     gate = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "seed_gate")
     env.runner.answer(job["id"], "approve", gate["id"])
     keys = [t["key"] for t in env.jobs.list_tasks(job["id"])]
-    assert "a0_1" in keys and "p0_3" in keys and "cite_r0" in keys
+    assert "a0_1" in keys and "a0_3" in keys and "cite_r0" in keys and not any(k.startswith("p0_") for k in keys)
 
     # Paper C has no open-access copy: its acquire task asks the user; answer skip.
     assert tick_until(env, job["id"], lambda: any(t["key"] == "a0_3" and t["status"] == "waiting_user"
@@ -102,6 +123,9 @@ def test_query_seeds_gate_rounds_convergence_and_report_phase(env_factory, works
 
     assert tick_until(env, job["id"], lambda: any(t["key"] == "cite_r0" and t["status"] == "done"
                                                   for t in env.jobs.list_tasks(job["id"])))
+    tasks = {t["key"]: t for t in env.jobs.list_tasks(job["id"])}
+    assert tasks["p0_1_1"]["status"] == "done" and tasks["w0_1"]["depends_on"] == ["p0_1_1"]
+    assert "p0_3_1" not in tasks                                           # skipped paper gets no reading tasks
     rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
     assert rounds[0]["read"] == 2 and rounds[0]["selected"] == 2           # F1 and F2 cited by both A and B
     assert {p["title"] for p in env.jobs.list_papers(job["id"], "reading")} == {"Foundation One", "Foundation Two"}
@@ -137,19 +161,7 @@ def test_folder_seeds_use_extracted_references(env_factory, workspace):
     ref_lists = [[{"title": "Shared Classic", "year": 1990}, {"title": "Only once", "year": 2000}],
                  [{"title": "Shared Classic", "year": 1990}]]
 
-    def read_local(msgs):
-        refs = ref_lists.pop(0)
-        import re
-        system = msgs[0]["content"]
-        md = re.search(r"Write (papers/\S+\.md)", system).group(1)
-        src = re.search(r"Read (papers/\S+\.pdf)", system).group(1)
-        return (call("write_file", path=md, content="## Value of this paper\nx [n1]") +
-                call("add_note", claim="replay", quote="about hippocampal replay", source=src) +
-                call("record_references", references=refs))
-
-    responses = []
-    for _ in range(2):
-        responses += [read_local, call("complete_task", summary="Summarized it."), call("report_review", verdict="pass")]
+    responses = read_paper_responses(2, ref_lists, quote="about hippocampal replay")
     env = env_factory(responses)
     env.runner.scholar = FakeScholar(workspace)
     job = env.jobs.create_job(env.project["id"], "R", "Q?", template="deep_research", permissions=["net:open-access"],
@@ -176,6 +188,24 @@ def test_work_from_openalex_parses_fields():
     assert w.openalex_id == "W123" and w.doi == "10.1037/0033-295X.102.3.419" and w.arxiv_id == "1234.5678"
     assert w.oa_pdf_url == "https://arxiv.org/pdf/1234.5678" and w.referenced_works == ["W9", "W10"]
     assert w.key() == "oa:W123"
+
+
+def test_split_paper_parts_at_headings_and_sets_references_aside():
+    body = "\n".join(["Title of paper", "Abstract", "a" * 500, "1. Introduction", "b " * 4000,
+                      "2. Methods", "c " * 4000, "Results", "d\n" * 9000, "Discussion", "e " * 300])
+    text = body + "\nReferences\n1. Smith J. A classic. 1990.\n2. Doe A. Another. 2001."
+    parts, refs = split_paper(text)
+    assert refs.startswith("References") and "Smith" in refs
+    assert all("Smith J." not in p for _, p in parts)
+    assert len(parts) >= 3 and all(len(p) <= PART_CHARS * 1.3 + 10 for _, p in parts)
+    assert "".join(p for _, p in parts).count("b ") == 4000                # nothing lost
+    assert parts[0][0].startswith("Beginning")
+
+
+def test_inputs_schema_lists_every_setting():
+    from localagent.jobs.templates import get_template
+    schema = get_template("deep_research").inputs_schema
+    assert {"seed_count", "min_fraction", "per_round", "max_papers", "max_rounds", "min_citations"} <= set(schema)
 
 
 def test_config_defaults_match_decisions():

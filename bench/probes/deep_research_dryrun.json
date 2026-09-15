@@ -1,0 +1,10 @@
+{
+  "seed_mode": "query",
+  "seeds": "hippocampal replay memory consolidation planning",
+  "seed_count": "4",
+  "max_papers": "6",
+  "max_rounds": "1",
+  "min_citations": "2",
+  "min_fraction": "0.1",
+  "per_round": "3"
+}

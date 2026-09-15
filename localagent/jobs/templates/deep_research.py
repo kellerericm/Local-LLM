@@ -1,7 +1,8 @@
 """deep_research: literature research by citation snowballing (design §6.4).
 
 Flow:
-  seed (code) → [seed gate, for query/list seeds] → round 0: per paper acquire (code) + read (agent, reviewed)
+  seed (code) → [seed gate, for query/list seeds] → round 0: per paper acquire (code: get the file, split it into
+  parts at section headings, set the reference list aside) → one short read task per part → write-up (agent, reviewed)
   → citations_r0 (code): count how often read papers cite each unread work; stop or pick the next round
   → ... → layout (agent, reviewed) → layout gate → sections (agent, reviewed) → abstract → compile (code)
 """
@@ -22,16 +23,25 @@ DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
-READ_PAPER = """Read {path} completely with read_document (page through it with offset until the end; keep a checklist of \
-the sections you've covered). Write {md} containing:
+PART = """Read {part} with read_file. It is part {k} of {n} of the paper "{title}" (extracted text; the original is {source}).
+Write {summary} containing, for each section that appears in this part, '### <section name>' followed by a 3-6 sentence
+summary of what it says. For each important claim relevant to the research question ({question}), call add_note with an
+exact quote copied from the text, source "{source}", and the section as location. Work only on this part."""
+
+ASSEMBLE = """Assemble the write-up of "{title}". Read the part summaries ({summaries}) and use search_notes with source
+"{source}" to see the notes saved from it. Write {md} containing:
 - '# {title}'
-- '## Section summaries': one '### <section name>' per section of the paper, each with a 3-6 sentence summary.
-- '## Key claims': bullets for the paper's important claims, each citing a note you saved with add_note (exact quote \
-from {path}), like [n12].
-- '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the \
-research question: {question}
-Then call record_references with every entry in the paper's reference list (title, first author, year, and DOI or arXiv \
-id when shown). If the text can't be read (e.g. a scanned PDF), call fail_task and say so."""
+- '## Section summaries': the part summaries in order, lightly edited into one flow
+- '## Key claims': bullets for the paper's most important claims, each citing a saved note like [n12]
+- '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the
+  research question: {question}
+{references}"""
+
+REFS_FROM_FILE = ("Then read {refs} and call record_references with its entries (title, first author, year, and DOI or "
+                  "arXiv id when shown).")
+REFS_NONE_FOUND = "No reference list was found in the text; call record_references with an empty list."
+
+PART_CHARS = 12_000
 
 LAYOUT = """Plan the report answering: {question}
 Read citation_graph.md (the most-cited works) and the paper summaries in papers/*.md, and use search_notes. Write outline.md:
@@ -118,19 +128,10 @@ def expand_round(runner, job, round_: int) -> int:
     group = f"round{round_}"
     tasks = [{"key": group, "title": f"Round {round_}: read {len(papers)} paper(s)", "instructions": "-", "done_when": "-"}]
     for i, p in enumerate(papers, 1):
-        source = p["file_path"] or pdf_path(p["key"])
-        md = paper_md(p["key"])
+        # Reading tasks are added once the text is available and split into parts (see expand_paper).
         tasks.append({"key": f"a{round_}_{i}", "parent_key": group, "title": f"Get: {p['title'][:70]}", "kind": "code",
-                      "handler": "acquire", "params": {"paper": p["key"]}, "instructions": "-",
-                      "done_when": "paper text available or skipped"})
-        tasks.append({"key": f"p{round_}_{i}", "parent_key": group, "title": f"Read: {p['title'][:70]}", "review": True,
-                      "depends_on": [f"a{round_}_{i}"], "params": {"paper": p["key"], "source": source, "md": md},
-                      "instructions": READ_PAPER.format(path=source, md=md, title=p["title"], question=job["goal"]),
-                      "done_when": f"{md} has section summaries, key claims citing notes, and a value assessment; "
-                                   "references recorded",
-                      "checks": [{"type": "file_contains", "path": md, "text": "## Value of this paper"},
-                                 {"type": "citations_valid", "path": md},
-                                 {"type": "references_recorded", "paper": p["key"]}]})
+                      "handler": "acquire", "params": {"paper": p["key"], "round": round_, "index": i},
+                      "instructions": "-", "done_when": "paper text available, split into parts, or skipped"})
         runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
     tasks.append({"key": f"cite_r{round_}", "title": f"Round {round_}: follow the citations", "kind": "code",
                   "handler": "citations", "depends_on": [group], "params": {"round": round_}, "instructions": "-",
@@ -138,6 +139,113 @@ def expand_round(runner, job, round_: int) -> int:
     runner.jobs.append_tasks(job["id"], tasks)
     runner.jobs.journal(job["id"], "plan", f"Round {round_}: added tasks to get and read {len(papers)} paper(s).")
     return len(papers)
+
+
+_HEADING = re.compile(r"^\s*(?:\d+(?:\.\d+)*\.?\s+)?(abstract|introduction|background|related work|methods?|materials and "
+                      r"methods|experimental procedures|results(?: and discussion)?|discussion|conclusions?|summary|"
+                      r"general discussion|references|bibliography|literature cited|acknowledg(?:e)?ments?)\s*$", re.I)
+_NUMBERED = re.compile(r"^\s*\d{1,2}(?:\.\d{1,2})*\.?\s+[A-Z][^.!?\d()]{2,80}$")    # not page headers like "194 Journal (2012)"
+
+
+def split_paper(text: str) -> tuple[list[tuple[str, str]], str]:
+    """Split extracted paper text into parts of about PART_CHARS at section headings; return (parts, references)."""
+    lines = text.splitlines()
+    ref_start = None
+    for i in range(len(lines) - 1, len(lines) // 3, -1):
+        m = _HEADING.match(lines[i])
+        if m and m.group(1).lower() in ("references", "bibliography", "literature cited"):
+            ref_start = i
+            break
+    body_lines = lines if ref_start is None else lines[:ref_start]
+    references = "" if ref_start is None else "\n".join(lines[ref_start:])
+    sections: list[tuple[str, list[str]]] = [("Beginning", [])]
+    for line in body_lines:
+        if _HEADING.match(line) or _NUMBERED.match(line):
+            sections.append((line.strip()[:80], [line]))
+        else:
+            sections[-1][1].append(line)
+    parts: list[tuple[str, str]] = []
+    names: list[str] = []
+    buf: list[str] = []
+    for name, sec_lines in sections:
+        sec_text = "\n".join(sec_lines)
+        if not sec_text.strip():
+            continue
+        if buf and len("\n".join(buf)) + len(sec_text) > PART_CHARS:
+            parts.append((", ".join(names), "\n".join(buf)))
+            names, buf = [], []
+        while len(sec_text) > PART_CHARS * 1.3:                    # a very long section: cut at a paragraph break
+            cut = sec_text.rfind("\n\n", 0, PART_CHARS)
+            if cut <= PART_CHARS // 2:
+                cut = sec_text.rfind("\n", 0, PART_CHARS)
+            if cut <= PART_CHARS // 2:
+                cut = PART_CHARS
+            parts.append((name, sec_text[:cut]))
+            sec_text = sec_text[cut:]
+            name = name.removesuffix(" (continued)") + " (continued)"
+        names.append(name)
+        buf.append(sec_text)
+    if buf:
+        parts.append((", ".join(names), "\n".join(buf)))
+    return parts, references
+
+
+def prepare_parts(runner, job, p: dict) -> int:
+    from ..documents import extract
+
+    ws = workspace_of(runner, job)
+    doc = extract(ws / p["file_path"], Path(runner.settings_getter().data_dir) / "doc_cache")
+    parts, references = split_paper(doc.text)
+    folder = ws / "papers" / slug(p["key"].replace(":", "-"))[:60]
+    folder.mkdir(parents=True, exist_ok=True)
+    for k, (names, text) in enumerate(parts, 1):
+        (folder / f"part-{k:02d}.md").write_text(f"<!-- part {k} of {len(parts)}: {names} -->\n{text}\n", encoding="utf-8")
+    if references.strip():
+        (folder / "references.txt").write_text(references, encoding="utf-8")
+    runner.jobs.upsert_paper(job["id"], p["key"], provenance={**(p.get("provenance") or {}), "parts": len(parts),
+                                                              "folder": folder.relative_to(ws).as_posix(),
+                                                              "references_file": bool(references.strip()),
+                                                              "extraction_warning": doc.warning})
+    return len(parts)
+
+
+def expand_paper(runner, job, acquire_task: dict) -> None:
+    p = runner.jobs.get_paper(job["id"], acquire_task["params"]["paper"])
+    prov = p.get("provenance") or {}
+    if p["status"] in ("skipped", "unavailable") or not prov.get("parts"):
+        return
+    r, i = acquire_task["params"]["round"], acquire_task["params"]["index"]
+    folder, n = prov["folder"], prov["parts"]
+    group = acquire_task["parent_key"]
+    tasks, part_keys, summaries = [], [], []
+    for k in range(1, n + 1):
+        key = f"p{r}_{i}_{k}"
+        part, summary = f"{folder}/part-{k:02d}.md", f"{folder}/summary-{k:02d}.md"
+        part_keys.append(key)
+        summaries.append(summary)
+        tasks.append({"key": key, "parent_key": group, "title": f"Read part {k}/{n}: {p['title'][:60]}",
+                      "depends_on": [acquire_task["key"]], "params": {"paper": p["key"], "part": k},
+                      "instructions": PART.format(part=part, k=k, n=n, title=p["title"], source=p["file_path"],
+                                                  summary=summary, question=job["goal"]),
+                      "done_when": f"{summary} exists with section summaries",
+                      "checks": [{"type": "file_contains", "path": summary, "text": "### "}]})
+    md = paper_md(p["key"])
+    if p["meta_references"]:
+        refs = "The reference list is already known from the scholarly index; don't record references."
+    elif prov.get("references_file"):
+        refs = REFS_FROM_FILE.format(refs=f"{folder}/references.txt")
+    else:
+        refs = REFS_NONE_FOUND
+    tasks.append({"key": f"w{r}_{i}", "parent_key": group, "title": f"Write-up and value: {p['title'][:60]}",
+                  "depends_on": part_keys, "review": True, "params": {"paper": p["key"], "assemble": True},
+                  "instructions": ASSEMBLE.format(title=p["title"], summaries=", ".join(summaries), source=p["file_path"],
+                                                  md=md, question=job["goal"], references=refs),
+                  "done_when": f"{md} has section summaries, key claims citing notes, and a value assessment; "
+                               "references known",
+                  "checks": [{"type": "file_contains", "path": md, "text": "## Value of this paper"},
+                             {"type": "citations_valid", "path": md},
+                             {"type": "references_recorded", "paper": p["key"]}]})
+    runner.jobs.append_tasks(job["id"], tasks)
 
 
 def expand_report(runner, job, reason: str) -> None:
@@ -219,35 +327,48 @@ def handle_seed(runner, job, task) -> HandlerResult:
     return HandlerResult(True, f"Registered {len(papers)} seed paper(s); listed in seeds.md.")
 
 
+def _ready(runner, job, p: dict, summary: str) -> HandlerResult:
+    try:
+        n = prepare_parts(runner, job, runner.jobs.get_paper(job["id"], p["key"]))
+    except Exception as e:
+        runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable")
+        return HandlerResult(True, f"{summary} But the text couldn't be extracted ({e}); skipping this paper.")
+    warning = (runner.jobs.get_paper(job["id"], p["key"]).get("provenance") or {}).get("extraction_warning")
+    return HandlerResult(True, f"{summary} Split into {n} part(s)." + (f" Warning: {warning}" if warning else ""))
+
+
 def handle_acquire(runner, job, task) -> HandlerResult:
+    import datetime as dt
+
     ws = workspace_of(runner, job)
     p = runner.jobs.get_paper(job["id"], task["params"]["paper"])
-    read_task = next((t for t in runner.jobs.list_tasks(job["id"]) if t["params"].get("paper") == p["key"]
-                      and t["kind"] == "agent"), None)
     if p["file_path"] and (ws / p["file_path"]).is_file():
         runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
-        return HandlerResult(True, f"Using {p['file_path']}.")
+        return _ready(runner, job, p, f"Using {p['file_path']}.")
     target = pdf_path(p["key"])
     if (ws / target).is_file():
         runner.jobs.upsert_paper(job["id"], p["key"], file_path=target, status="reading",
                                  provenance={"source": "added by user"})
-        return HandlerResult(True, f"Using {target} (added by you).")
+        return _ready(runner, job, p, f"Using {target} (added by you).")
     answers = [m.group(1).lower() for g in task["guidance"] for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
     if answers and "skip" in answers[-1]:
         runner.jobs.upsert_paper(job["id"], p["key"], status="skipped")
-        if read_task:
-            runner.jobs.update_task(read_task["id"], status="skipped")
         return HandlerResult(True, "Skipped at your request.")
-    if p["oa_pdf_url"]:
-        require_network(runner, job, task, f"Download the open-access PDF of \"{p['title']}\" from {p['oa_pdf_url']}")
+    require_network(runner, job, task, f"Find and download an open-access PDF of \"{p['title']}\"")
+    client = scholar(runner)
+    tried = []
+    for url in client.candidate_pdf_urls(p):
+        tried.append(url)
         try:
-            if scholar(runner).download_pdf(p["oa_pdf_url"], ws / target):
-                import datetime as dt
+            if client.download_pdf(url, ws / target):
                 runner.jobs.upsert_paper(job["id"], p["key"], file_path=target, status="reading", provenance={
-                    "source": "open-access download", "url": p["oa_pdf_url"], "retrieved": dt.datetime.now().isoformat()})
-                return HandlerResult(True, f"Downloaded the open-access PDF to {target}.")
+                    "source": "open-access download", "url": url, "retrieved": dt.datetime.now().isoformat()})
+                return _ready(runner, job, p, f"Downloaded the open-access PDF from {url}.")
         except Exception as e:
-            runner.jobs.journal(job["id"], "acquire", f"Download failed for {p['title']}: {e}", task["key"])
+            runner.jobs.journal(job["id"], "acquire", f"Download failed from {url}: {e}", task["key"])
+    if tried:
+        runner.jobs.journal(job["id"], "acquire", f"No usable PDF for \"{p['title']}\" from {len(tried)} open-access "
+                                                  "location(s).", task["key"])
     runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable")
     year = f" ({p['year']})" if p["year"] else ""
     return HandlerResult(False, "No open-access copy", wait_question=(
@@ -370,7 +491,9 @@ class DeepResearch(Template):
         key = task["key"]
         if key == "seed" and c["seed_mode"] == "folder" or key == "seed_gate":
             expand_round(runner, job, 0)
-        elif task["kind"] == "agent" and task["params"].get("paper"):
+        elif task["kind"] == "code" and task["handler"] == "acquire":
+            expand_paper(runner, job, task)
+        elif task["params"].get("assemble"):
             runner.jobs.upsert_paper(job["id"], task["params"]["paper"], status="read")
         elif key.startswith("cite_r"):
             rounds = (runner.jobs.get_job(job["id"])["inputs"] or {}).get("citation_rounds") or []
@@ -421,6 +544,9 @@ DEEP_RESEARCH = register(DeepResearch(
         "max_papers": {"type": "string", "label": "Max papers read", "default": "60"},
         "max_rounds": {"type": "string", "label": "Max citation rounds", "default": "4"},
         "min_citations": {"type": "string", "label": "Follow works cited by at least", "default": "3"},
+        "min_fraction": {"type": "string", "label": "…or by at least this fraction of papers read", "default": "0.15"},
+        "seed_count": {"type": "string", "label": "Seed papers from a search", "default": "10"},
+        "per_round": {"type": "string", "label": "Cited papers to add per round", "default": "8"},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },
     handlers={"seed": handle_seed, "acquire": handle_acquire, "citations": handle_citations, "compile": handle_compile},

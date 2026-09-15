@@ -3,6 +3,19 @@
 Record failures here: date, what was run, what happened (exact error), suspected cause, status (open / fixed / won't fix).
 A failure is information, not a verdict.
 
+## 2026-09-15 — deep_research dry run (real OpenAlex): four problems
+- **Run:** `python -m bench.probes.job_e2e --workload empty --template deep_research --answer skip --permissions net:open-access --inputs-file bench/probes/deep_research_dryrun.json` (query: hippocampal replay, memory consolidation, planning).
+- **What happened:** after 4 hours the job paused on its budget with 1 paper attempted.
+  1. **Per-paper reading task too large.** "System consolidation of memory during sleep" (12 pages, 1,161 lines) failed 3 attempts: two step limits (31 steps, ~42 min each), one needs_help. The model spent its steps paging through the PDF and never wrote the summary; only 3 notes were saved.
+  2. **Open-access downloads mostly failed.** 1/10 PDFs downloaded. 6 papers had an OpenAlex `pdf_url`, but publisher hosts returned HTML or refused scripted requests; the download is (correctly) rejected when the bytes don't start with `%PDF`.
+  3. **Harness bug.** job_e2e only answered questions when the whole job was `waiting_user`, so the 9 "add the PDF or reply skip" questions went unanswered while another task ran.
+  4. **Inputs silently dropped.** `seed_count`, `min_fraction`, `per_round` weren't in the template's inputs schema, so the API discarded them (10 seeds instead of 4).
+- **Fixes:**
+  - Per-paper work split into code preparation (extract, split into ~3k-token parts at headings, set aside references), one short agent task per part, and a reviewed assemble/assess task.
+  - Acquisition tries all OpenAlex OA locations, Europe PMC, Semantic Scholar openAccessPdf, and an arXiv title search.
+  - The harness answers any waiting task; the schema lists all inputs.
+- **Status:** fixes in progress.
+
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)
 - **What happened:**

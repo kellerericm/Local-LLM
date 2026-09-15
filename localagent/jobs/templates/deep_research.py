@@ -40,8 +40,8 @@ ASSEMBLE = """Assemble the write-up of "{title}". Steps, each done once:
 - '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the
   research question: {question}
 4. {references}
-5. Call complete_task. Its checks (sections present, citations valid) run automatically; you don't need to verify
-   them yourself. If {md} already exists from an earlier attempt, read it once, fix what's missing, and go to step 5."""
+5. Call check_citations on {md} once and fix any ids it lists. Then call complete_task; its other checks run
+   automatically, so you don't need to verify them yourself. If {md} already exists from an earlier attempt, read it once, fix what's missing, and go to step 5."""
 
 REFS_FROM_FILE = ("Read {refs} and call record_references with its entries (title, first author, year, and DOI or "
                   "arXiv id when shown).")
@@ -60,18 +60,21 @@ Write outline.md once:
 - '## Literature review' with '### <theme>' subsections grouping the papers, bullets citing notes [n12]
 - '## Foundational works': the most-cited papers that were read and why they matter, citing notes
 - '## Synthesis: agreements, conflicts, and gaps', citing notes on both sides of each disagreement
-- '## Conclusion and summary'"""
+- '## Conclusion and summary'
+Then call check_citations on outline.md once, fix any ids it lists, and call complete_task (the section checks run
+automatically; don't verify them yourself)."""
 
 SECTION = """Write the report section "{heading}" to {path}, following its part of outline.md (including any '###'
 subsections). Start the file with '## {heading}'. Read outline.md and literature_digest.md; for more detail on a point,
 call search_notes with a few keywords (brief true) instead of opening the full papers/*.md write-ups. Support every
 factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write the file
-once, then call complete_task (its checks run automatically)."""
+once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 
 ABSTRACT = """Read sections/_digest.md (the opening and key points of every section, built to fit your context) and write
 sections/00-abstract.md: '## Abstract', then 150-250 words covering the question, the scope of the literature (how many
 papers, how they were selected by citation), the main findings, the key disagreements, and the conclusion. Cite the most
-important notes like [n12], using only note ids that appear in the digest. Then call complete_task."""
+important notes like [n12], using only note ids that appear in the digest. Call check_citations on the file, fix any
+ids it lists, then call complete_task."""
 
 DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with room for the task and the answer
 SECTION_DIGEST_CHARS = 16_000

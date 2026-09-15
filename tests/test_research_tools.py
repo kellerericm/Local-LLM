@@ -109,3 +109,28 @@ def test_add_note_verifies_quotes_and_search_finds_them(env_factory, workspace):
     assert env.jobs.search_notes(job["id"], "weights")[0]["source"] == "survey.md"
     env.jobs.delete_job(job["id"])
     assert env.jobs.search_notes(job["id"], "weights") == []            # FTS cleaned up via cascade + trigger
+
+
+def test_check_citations_and_note_listing_by_id(env_factory, workspace):
+    # Dry run 8: a keyword-less search showed notes n51-n100 only, and the model decided n1-n50 didn't exist.
+    (workspace / "src.md").write_text(" ".join(f"fact{i} is stated here." for i in range(60)), encoding="utf-8")
+    env = env_factory([
+        *["".join(call("add_note", claim=f"Fact {i}", quote=f"fact{i} is stated here", source="src.md")
+                  for i in range(k, k + 11)) for k in range(0, 55, 11)],          # 11 notes per message
+        call("write_file", path="out.md", content="ok [n1] and [n55] but not [n9999]"),
+        call("check_citations", path="out.md"),
+        call("search_notes", brief=True, limit=50),
+        call("search_notes", brief=True, limit=50, offset=50),
+        call("fail_task", reason="test done"),
+    ])
+    job = env.job()
+    env.plan(job["id"], plan=GOOD_PLAN[:1])
+    env.runner._tick()
+    run = env.jobs.list_runs(job["id"])[-1]
+    results = [m["content"] for m in env.jobs.list_run_messages(run["id"]) if m["role"] == "tool"]
+    ids = sorted(n["id"] for n in env.jobs.list_notes(job["id"]))
+    assert len(ids) == 55 and ids[0] == 1
+    R = 56                                                                  # 55 note results + write_file
+    assert "2 of 3 citations in out.md are valid" in results[R] and "[n9999]" in results[R]
+    assert results[R + 1].startswith("Notes 1-50 of 55 (by id; use offset=50 for more)") and "[n1]" in results[R + 1]
+    assert results[R + 2].startswith("Notes 51-55 of 55 (by id)") and "[n55]" in results[R + 2]

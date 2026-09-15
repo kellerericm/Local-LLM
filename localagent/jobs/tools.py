@@ -124,15 +124,45 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
     return ToolResult(f"Saved note n{note['id']} (quote verified in {where}{recorded}). Cite it as [n{note['id']}].")
 
 
-def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10, brief: bool = False) -> ToolResult:
+def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10, brief: bool = False,
+                 offset: int = 0) -> ToolResult:
     conv = ctx.conversation
-    notes = conv.jobs.search_notes(conv.job["id"], query, source or None, limit)
+    header = ""
+    if query.strip():
+        notes = conv.jobs.search_notes(conv.job["id"], query, source or None, limit)
+    else:
+        # No keywords: list in id order and say how many there are, so a page isn't mistaken for all notes
+        # (dry run 8: the model saw n51-n100 and concluded n1-n50 didn't exist).
+        every = sorted(conv.jobs.list_notes(conv.job["id"], source or None), key=lambda n: n["id"])
+        notes = every[offset:offset + limit]
+        if notes:
+            more = f"; use offset={offset + len(notes)} for more" if offset + len(notes) < len(every) else ""
+            header = f"Notes {offset + 1}-{offset + len(notes)} of {len(every)} (by id{more}):\n"
     if not notes:
         return ToolResult("No matching notes." + (" Try fewer or different words." if query else ""))
     if brief:
-        return ToolResult("\n".join(f"[n{n['id']}] ({n['location'] or n['source']}) {n['claim']}" for n in notes))
-    return ToolResult("\n".join(f"[n{n['id']}] ({n['source']}{', ' + n['location'] if n['location'] else ''}) "
-                                f"{n['claim']} — \"{n['quote'][:300]}\"" for n in notes))
+        return ToolResult(header + "\n".join(f"[n{n['id']}] ({n['location'] or n['source']}) {n['claim']}" for n in notes))
+    return ToolResult(header + "\n".join(f"[n{n['id']}] ({n['source']}{', ' + n['location'] if n['location'] else ''}) "
+                                         f"{n['claim']} — \"{n['quote'][:300]}\"" for n in notes))
+
+
+def check_citations(ctx: ToolContext, path: str) -> ToolResult:
+    import re as _re
+
+    conv = ctx.conversation
+    p = ctx.check_path(path, "read")
+    if not p.is_file():
+        return ToolResult(f"File not found: {path}", ok=False)
+    cited = sorted({int(m) for m in _re.findall(r"\[n(\d+)\]", p.read_text(encoding="utf-8", errors="replace"))})
+    known = {n["id"] for n in conv.jobs.list_notes(conv.job["id"])}
+    bad = [i for i in cited if i not in known]
+    if not cited:
+        return ToolResult(f"{path} cites no notes. Cite saved notes like [n12].")
+    if not bad:
+        return ToolResult(f"All {len(cited)} note citations in {path} are valid.")
+    return ToolResult(f"{len(cited) - len(bad)} of {len(cited)} citations in {path} are valid. These don't exist: "
+                      f"{', '.join(f'[n{i}]' for i in bad)}. Replace or remove them (search_notes with keywords finds "
+                      "the right note), then check again.")
 
 
 def record_references(ctx: ToolContext, references: list[dict], paper: str = "") -> ToolResult:
@@ -258,11 +288,19 @@ ADD_NOTE = Tool(
 SEARCH_NOTES = Tool(
     "search_notes",
     "Search this job's saved notes by keywords, optionally for one source. Returns note ids, claims, and quotes "
-    "(brief: ids, locations, and claims only, for an overview of many notes).",
+    "(brief: ids, locations, and claims only, for an overview of many notes). Without keywords, lists notes by id "
+    "with the total count; page with offset. To check the citations in a file, use check_citations instead.",
     {"type": "object", "properties": {
         "query": {"type": "string"}, "source": {"type": "string"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "brief": {"type": "boolean"}}},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "brief": {"type": "boolean"},
+        "offset": {"type": "integer", "minimum": 0}}},
     search_notes, "job")
+
+CHECK_CITATIONS = Tool(
+    "check_citations",
+    "Check that every note citation like [n12] in a file refers to a saved note. Lists any that don't exist.",
+    {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+    check_citations, "job")
 
 RECORD_REFERENCES = Tool(
     "record_references",

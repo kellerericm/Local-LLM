@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 # Tools that only look at things. Repeating one of these with identical arguments, when nothing was changed since,
 # returns the same result; a small model with elided context can loop on them (dry run 5: 14 alternating
 # search_notes/read_file calls without writing anything).
-READ_ONLY_TOOLS = {"read_file", "list_dir", "glob", "grep", "read_document", "search_notes", "list_projects"}
+READ_ONLY_TOOLS = {"read_file", "list_dir", "glob", "grep", "read_document", "search_notes", "check_citations", "list_projects"}
 
 
 def repeat_guard(seen: dict[str, list[int]], name: str, result: ToolResult, step: int) -> ToolResult:

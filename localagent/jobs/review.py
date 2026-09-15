@@ -6,7 +6,7 @@ from __future__ import annotations
 from ..coordinator import prompts as base_prompts
 from ..tools.registry import Tool, ToolContext, ToolRegistry, ToolResult
 from .sessions import JobSession
-from .tools import SEARCH_NOTES
+from .tools import CHECK_CITATIONS, SEARCH_NOTES
 
 REVIEW_TOOLS = ("read_file", "read_document", "list_dir", "glob", "grep")
 
@@ -65,7 +65,7 @@ class ReviewSession(JobSession):
 
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
         available = {t.name: t for t in registry.available(ctx)}
-        return [available[n] for n in REVIEW_TOOLS if n in available] + [SEARCH_NOTES, REPORT_REVIEW]
+        return [available[n] for n in REVIEW_TOOLS if n in available] + [SEARCH_NOTES, CHECK_CITATIONS, REPORT_REVIEW]
 
 
 def review_request(job: dict, task: dict, summary: str, new_context: list[dict]) -> str:

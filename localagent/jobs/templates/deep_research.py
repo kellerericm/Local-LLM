@@ -82,7 +82,8 @@ ABSTRACT = """Read sections/_digest.md (the opening and key points of every sect
 sections/00-abstract.md: '## Abstract', then 150-250 words covering the question, the scope of the literature (how many
 papers, how they were selected by citation), the main findings, the key disagreements, and the conclusion. Cite the most
 important notes like [n12], using only note ids that appear in the digest. Call check_citations on the file, fix any
-ids it lists, then call complete_task."""
+ids it lists, then call complete_task.
+Facts about the scope, from the job's records (use these numbers exactly; don't count notes as papers): {facts}"""
 
 DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with room for the task and the answer
 SECTION_DIGEST_CHARS = 16_000
@@ -321,7 +322,17 @@ def expand_sections(runner, job) -> None:
     tasks.append({"key": "section_digest", "parent_key": "write", "title": "Build the section digest", "kind": "code",
                   "handler": "section_digest", "depends_on": keys, "instructions": "-",
                   "done_when": "sections/_digest.md exists"})
-    tasks.append({"key": "abstract", "parent_key": "write", "title": "Write the abstract", "instructions": ABSTRACT,
+    papers = runner.jobs.list_papers(job["id"])
+    rounds = (job.get("inputs") or {}).get("citation_rounds") or []
+    read = [p for p in papers if p["status"] == "read"]
+    facts = (f"{len(read)} papers read over {len(rounds)} citation round(s), starting from "
+             f"{sum(1 for p in papers if p['round'] == 0)} seed paper(s) ({cfg(job)['seed_mode']} seeds); "
+             f"{len(runner.jobs.list_notes(job['id']))} verified notes; "
+             f"{sum(1 for p in papers if p['status'] in ('unavailable', 'skipped'))} papers couldn't be obtained or "
+             f"were skipped. Search stop reason: {(rounds[-1].get('stop') if rounds else None) or 'not recorded'}. "
+             f"Papers read: " + "; ".join(f"{p['title']} ({p['year'] or 'n.d.'})" for p in read[:20]))
+    tasks.append({"key": "abstract", "parent_key": "write", "title": "Write the abstract",
+                  "instructions": ABSTRACT.format(facts=facts),
                   "depends_on": ["section_digest"], "review": True, "done_when": "sections/00-abstract.md exists with a cited abstract",
                   "checks": [{"type": "file_contains", "path": "sections/00-abstract.md", "text": "## Abstract"},
                              {"type": "citations_valid", "path": "sections/00-abstract.md"}]})
@@ -613,7 +624,8 @@ def handle_compile(runner, job, task) -> HandlerResult:
         authors = ", ".join(p["authors"][:3]) + (" et al." if len(p["authors"]) > 3 else "")
         ident = f" doi:{p['doi']}" if p["doi"] else (f" arXiv:{p['arxiv_id']}" if p["arxiv_id"] else "")
         cited = f" — cited by {p['cited_by_read']} of the papers read" if p["cited_by_read"] else ""
-        lines.append(f"- {authors + '. ' if authors else ''}{p['title']} ({p['year'] or 'n.d.'}).{ident}{cited}")
+        lead = (authors if authors.endswith(".") else authors + ".") + " " if authors else ""
+        lines.append(f"- {lead}{p['title']} ({p['year'] or 'n.d.'}).{ident}{cited}")
     lines += ["", "## How the literature was gathered", "",
               f"{len(read)} papers were read over {len(rounds)} citation round(s)."]
     for r in rounds:

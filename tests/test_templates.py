@@ -165,3 +165,16 @@ def test_template_setup_failure_is_explained(env_factory):
     env.runner._tick()
     job = env.jobs.get_job(job["id"])
     assert job["status"] == "failed" and "No documents" in job["status_reason"]
+
+
+def test_citation_table_pairs_sentences_with_the_notes_they_cite(tmp_path):
+    from localagent.jobs.review import citation_table
+    (tmp_path / "s.md").write_text("## S\nReplay supports planning [n1]. Maps are spatial [n2][n9].\n- Bullet claim [n1]",
+                                   encoding="utf-8")
+    notes = [{"id": 1, "claim": "Forward replay precedes movement", "quote": "forward replay preceded movement"},
+             {"id": 2, "claim": "Bellman backups", "quote": "Bellman backups can be applied"}]
+    table = citation_table(tmp_path, ["s.md"], notes)
+    assert '"Replay supports planning." -> [n1] Forward replay precedes movement' in table
+    assert '"Maps are spatial." -> [n2] Bellman backups' in table and "[n9] (no such note)" in table
+    assert '"Bullet claim" -> [n1]' in table
+    assert "more citations not shown" in citation_table(tmp_path, ["s.md"], notes, limit=120)

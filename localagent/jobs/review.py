@@ -3,6 +3,9 @@ worker's conversation. It also vets facts the worker added to the shared scratch
 unchecked wrong analysis spreading through context)."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from ..coordinator import prompts as base_prompts
 from ..tools.registry import Tool, ToolContext, ToolRegistry, ToolResult
 from .sessions import JobSession
@@ -68,7 +71,41 @@ class ReviewSession(JobSession):
         return [available[n] for n in REVIEW_TOOLS if n in available] + [SEARCH_NOTES, CHECK_CITATIONS, REPORT_REVIEW]
 
 
-def review_request(job: dict, task: dict, summary: str, new_context: list[dict]) -> str:
+CITATION_TABLE_CHARS = 9000
+
+
+def citation_table(workspace: Path, paths: list[str], notes: list[dict], limit: int = CITATION_TABLE_CHARS) -> str:
+    """Each cited sentence next to the note it cites, so a reviewer can judge support without looking every note up.
+    Dry run 8: citations to real but unrelated notes (Bellman-backup notes cited for the 'cognitive map') passed
+    checks and most reviews."""
+    by_id = {n["id"]: n for n in notes}
+    rows: list[str] = []
+    for rel in paths:
+        f = workspace / rel
+        if not f.is_file():
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+            ids = [int(x) for x in re.findall(r"\[n(\d+)\]", sentence)]
+            for i in dict.fromkeys(ids):
+                n = by_id.get(i)
+                said = re.sub(r"\s+([.,;:!?])", r"\1",
+                              re.sub(r"\s+", " ", re.sub(r"\[n\d+\]", "", sentence))).strip(" -*#")[:220]
+                if n:
+                    rows.append(f'- {rel}: "{said}" -> [n{i}] {n["claim"][:160]} | quote: "{n["quote"][:160]}"')
+                else:
+                    rows.append(f'- {rel}: "{said}" -> [n{i}] (no such note)')
+    out, used = [], 0
+    for r in rows:
+        if used + len(r) > limit:
+            out.append(f"- ... {len(rows) - len(out)} more citations not shown; spot-check them with search_notes")
+            break
+        out.append(r)
+        used += len(r) + 1
+    return "\n".join(out)
+
+
+def review_request(job: dict, task: dict, summary: str, new_context: list[dict], citations: str = "") -> str:
     outputs = sorted({c.get("path") for c in task["checks"] if c.get("path")} |
                      set((task.get("params") or {}).get("outputs") or []))
     parts = [f"**Job goal:** {job['goal']}",
@@ -82,5 +119,8 @@ def review_request(job: dict, task: dict, summary: str, new_context: list[dict])
                      "\n".join(f"- [c{i['id']}] {i['text']}" for i in new_context))
     else:
         parts.append("**Context items the worker added:** none")
+    if citations:
+        parts.append("**Citations to check** (each cited sentence, then the note it cites). Fail any whose note doesn't "
+                     "support the sentence:\n" + citations)
     parts.append("Review it, then call report_review.")
     return "\n\n".join(parts)

@@ -22,7 +22,7 @@ from .models import (ACTIVE_JOB_STATUSES, AWAITING_APPROVAL, CANCELLED, DONE, FA
                      T_DONE, T_FAILED, T_FINISHED, T_PENDING, T_RUNNING, T_SKIPPED, T_WAITING, TERMINAL_JOB_STATUSES,
                      WAITING_USER, JobStore)
 from .planner import leaves, next_ready_leaf
-from .review import ReviewSession, review_request
+from .review import ReviewSession, citation_table, review_request
 from .sessions import JobApprover, PlanSession, TaskSession, job_project
 from .templates import HandlerResult, get_template
 
@@ -618,7 +618,12 @@ class JobRunner:
         run = self.jobs.create_run(job["id"], "review", task["id"], task["attempts"] + 1)
         session = ReviewSession(self, job, run, task)
         self.jobs.journal(job["id"], "review", "Reviewing the result.", task["key"])
-        outcome = self._execute(session, review_request(job, task, summary, new_context))
+        cited_files = sorted({c["path"] for c in task["checks"] if c.get("type") == "citations_valid" and c.get("path")})
+        citations = ""
+        if cited_files:
+            project = job_project(self.store, job)
+            citations = citation_table(Path(project["workspace_path"]), cited_files, self.jobs.list_notes(job["id"]))
+        outcome = self._execute(session, review_request(job, task, summary, new_context, citations))
         res = session.result
         if not res or res.get("kind") != "review":
             self.jobs.finish_run(run["id"], "failed", outcome, "No verdict", session.steps)

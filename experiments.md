@@ -9,6 +9,43 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-15 — Deep research dry run 8: first end-to-end report (Qwen3.5-9B, 4-bit)
+- **Question:** Can deep_research go from a search query to a compiled, cited literature review on the real model and real open-access sources?
+- **Setup:**
+  - Query "hippocampal replay memory consolidation planning", 4 seeds, max 6 papers, 1 citation round, follow threshold 2.
+  - `job_e2e --template deep_research`; the script answers "skip" to questions and approves gates.
+  - Raw results: `D:\LocalAgent\bench-runs\20260915-102451_job_e2e_empty_deep_research\` (`report.md`, `result_part1.json`, `result.json`, `set_aside/`).
+- **Status:** done, **with hand patches**, so this doesn't count as an unassisted pass. Across six resumes the harness:
+  - built the literature digest offline and updated stored layout and section instructions to fixed versions;
+  - cleared stale attempt notes and moved failed outlines aside;
+  - reset failed tasks.
+  - Each change is recorded in the job journal.
+- **Results:**
+  - **Status:** 47/47 tasks done, 5.4 h of job time, 722 model steps.
+  - **Papers:** 4 read (2 seeds, 2 round-1). 3 skipped: one 53-part review, and two with no free copy or not in Europe PMC.
+  - **Sources:** full text came from Europe PMC JATS XML; every PDF location refused scripted downloads.
+  - **Notes:** 105, all verbatim.
+  - **Report:** 68 KB. All 63 citations point to existing notes; bibliography, gathering record, and evidence appendix correct.
+  - **Citation graph:** the top of the graph was the field's foundational works (O'Keefe & Nadel 1978, Foster & Knierim 2006, Lee & Wilson 2002, Diba & Buzsáki 2007, Wilson & McNaughton 1994).
+  - **Reading was reliable once fixed:** all 22 part tasks and 4 paper write-ups passed on the first attempt in the final configuration, about 4 min per part.
+- **Quality problems in the report:**
+  - **Abstract:** says "105 papers" (it's 4 papers and 105 notes). It cites two methods notes (SWR detection criteria) for claims about disagreements.
+  - **Citations:** some point to real notes that don't support the sentence. The outline cited Bellman-backup notes for "The Hippocampus as a Cognitive Map", and this propagated. Only one review (Conclusion) caught it.
+  - **Foundational works:** unread works with muddled titles and years ("Memory of Sequential Experience … (2009)").
+  - **Structure:** the introduction grew 9 subsections that duplicate the literature review.
+- **What failed along the way and was fixed** (details in failed_tests.md):
+  - task inputs that overflowed context (paper write-ups, then the layout)
+  - repeat loops on read-only tools
+  - a repeat guard that blocked legitimate re-reads after context trimming
+  - no way to look notes up by id or check a file's citations
+  - failures counted per call instead of per message
+  - stale attempt notes
+  - endless searching for evidence about unread works
+- **Changes from the quality review:**
+  - The abstract task gets the scope facts (papers, rounds, notes) from code.
+  - Reviewers of cited writing get a code-built citation table (each cited sentence next to the note's claim and quote), so unsupported citations are visible without lookups.
+- **Conclusion:** the pipeline works end to end, and reading is solid. Report writing is the weak stage for a 9B model: structure drifts and citations are loosely matched. Next levers are a stronger citation-support review and tighter section scopes. The final test should run unpatched with the default 4 rounds, so foundational works actually get read.
+
 ## 2026-09-15 — Phase 3b validation: research_report template on sandbox/lake_veyra (Qwen3.5-9B, pre-quantized copy)
 - **Question:** Does the research_report template meet the 3b criterion (recall ≥ 80%, 100% verbatim quotes) with the real model, including a mid-task kill?
 - **Setup:**

@@ -73,6 +73,25 @@ A failure is information, not a verdict.
       - Compile ignores `_*.md` working files.
   - To finish this run on the fix, the harness built the digest offline, updated the stored layout instructions, moved the failed outline to `outline_failed_attempts.md`, and retried the task (noted in the job journal).
   - Still open: OpenAlex has duplicate records (*The Hippocampus as a Cognitive Map* 1978 and 1979), and the graph doesn't merge them by title.
+- **Rerun 8, report phase, 2026-09-15 13:53–16:10:** further failures, each fixed and the run resumed. Outcome and report quality are in experiments.md.
+  1. **Layout retry:** it wrote the outline, then used its remaining steps verifying citations. A keyword-less search_notes showed n51–n100 only, so the model decided n1–n50 didn't exist. **Fixes:**
+     - check_citations tool
+     - search_notes lists by id with the total and an offset
+  2. **Layout retry:** it looked for an outline.md that no longer existed, misled by six stale attempt notes. **Fix:** the prompt shows only the latest 2 attempt notes (all user guidance kept).
+  3. **Section s1:** the repeat guard withheld a legitimate re-read of outline.md after context fitting had shortened the earlier read. **Fixes:**
+     - The guard only counts repeats still fully visible.
+     - Section instructions embed their outline part.
+  4. **Section s3:** it couldn't fetch notes the outline cited by id. **Fix:** search_notes accepts an id-only query.
+  5. **Section s3:** it found those notes don't support the outline's claims, then 3 invalid calls in one message ended the attempt. **Fixes:**
+     - Failures count per message.
+     - search_notes limit 100.
+     - Sections may replace or drop citations that don't fit.
+  6. **Section s3:** 25 searches for notes about works that were never read, nothing written. **Fixes:**
+     - A nudge after 10 look-only steps in job tasks.
+     - Unread foundational works are described through citing papers and labelled as not read.
+  7. **Report quality:** abstract miscounted papers; unsupported citations. **Fixes:**
+     - Code-supplied scope facts for the abstract.
+     - Citation table in reviews of cited writing.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

@@ -9,6 +9,22 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-15 — Phase 3b validation: research_report template on sandbox/lake_veyra (Qwen3.5-9B, pre-quantized copy)
+- **Question:** Does the research_report template meet the 3b criterion (recall ≥ 80%, 100% verbatim quotes) with the real model, including a mid-task kill?
+- **Setup:**
+  - Command: `python -m bench.probes.job_e2e --workload lake_veyra --template research_report --minutes 180 --budget-hours 3`.
+  - The script approves gates like a user.
+  - Raw results: `D:\LocalAgent\bench-runs\20260914-235043_job_e2e_lake_veyra_research_report\`.
+- **Status:** done. **Passed.**
+- **Results:**
+  - 17/17 tasks done in 1 h 45 min (213 model steps). The server was killed during r2; the task resumed and completed.
+  - **Fact recall 11/11**; both conflicting estimates presented; irrelevant trail notice not cited; 7 sources cited.
+  - **Quotes: 35/35 verbatim**, independently re-verified against the sources. 32 of the notes are cited in the 16k-character report.
+  - **Reviewer:** 9 reviews: 5 pass, 2 fail, 2 ran out of steps (accepted by default).
+    - Both failures were real errors, fixed on retry: section s5 missed citations for its key explanation; the summary cited the 2022 value (29) as evidence for "26 by 2024".
+- **Fixes from this run:** the reviewer gets 20 steps and a budget hint, and the no-steps-left wrap-up now offers `report_review`, so it always records a verdict (`test_reviewer_out_of_steps_still_records_a_verdict`).
+- **Speed:** reading and note-taking ran 1–2.5 min per document; drafting and reviewing sections 6–23 min each, which is the bulk of the time.
+
 ## 2026-09-14 — Speed vs prompt length (Qwen3.5-9B, 4-bit, RTX 4060 Ti 16 GB)
 - **Question:** Why did a long-context job step take 15+ minutes?
 - **Setup:** `python -m bench.probes.context_speed`; thinking off; 32–64 new tokens; model fully on GPU (7.2 GB of weights).

@@ -89,6 +89,7 @@ WORKLOADS = {
                 "protected": ("evaluate.py", "data.csv")},
     "lake_veyra": {"folder": "lake_veyra", "title": "Lake Veyra phosphorus report", "goal": LAKE_GOAL,
                    "protected": tuple(p.name for p in (ROOT / "sandbox" / "lake_veyra").iterdir())},
+    "empty": {"folder": None, "title": "Literature review", "goal": "", "protected": ()},
 }
 
 
@@ -103,12 +104,22 @@ def main():
     ap.add_argument("--template", default="generic", help="job type: generic, research_report, deep_research")
     ap.add_argument("--inputs", default="{}", help="JSON template inputs")
     ap.add_argument("--answer", default="Use your best judgment within the stated rules; no further input is available.")
+    ap.add_argument("--permissions", default="", help="comma-separated job permissions, e.g. net:open-access")
+    ap.add_argument("--goal", default="")
+    ap.add_argument("--title", default="")
     args = ap.parse_args()
     wl = WORKLOADS[args.workload]
 
     run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}_{args.template}"
-    ws = run_dir / wl["folder"]
-    shutil.copytree(ROOT / "sandbox" / wl["folder"], ws)
+    ws = run_dir / (wl["folder"] or "workspace")
+    if wl["folder"]:
+        shutil.copytree(ROOT / "sandbox" / wl["folder"], ws)
+    else:
+        ws.mkdir(parents=True)
+    if args.goal:
+        wl = {**wl, "goal": args.goal}
+    if args.title:
+        wl = {**wl, "title": args.title}
     global CODE_ROOT
     CODE_ROOT = run_dir / "code"
     shutil.copytree(ROOT / "localagent", CODE_ROOT / "localagent", ignore=shutil.ignore_patterns("__pycache__"))
@@ -130,6 +141,7 @@ def main():
     project = c.post("/api/projects", json={"name": wl["folder"], "workspace_path": str(ws)}).json()
     job = c.post("/api/jobs", json={"project_id": project["id"], "title": wl["title"], "goal": wl["goal"],
                                     "template": args.template, "inputs": json.loads(args.inputs),
+                                    "permissions": [p for p in args.permissions.split(",") if p],
                                     "budget": {"max_hours": args.budget_hours, "max_steps": 1000,
                                                "indefinite": args.indefinite}}).json()
     job_id = job["id"]
@@ -190,7 +202,20 @@ def main():
 
     d = c.get(f"/api/jobs/{job_id}").json()
     kill_tree(proc)
-    if args.workload == "tune_me":
+    if args.template == "deep_research":
+        rt_db = data_dir / "localagent.sqlite3"
+        import sqlite3
+        con = sqlite3.connect(rt_db)
+        papers = con.execute("select title, status, round, cited_by_read, provenance from papers").fetchall()
+        notes = con.execute("select source, quote from notes").fetchall()
+        con.close()
+        from localagent.jobs.documents import extract, find_quote
+        verbatim = sum(1 for s, q in notes if (ws / s).is_file() and find_quote(extract(ws / s).text, q))
+        score = json.dumps({"papers": [{"title": t, "status": s, "round": r, "cited_by_read": c} for t, s, r, c, _ in papers],
+                            "notes": len(notes), "verbatim": verbatim,
+                            "report": (ws / "report.md").exists()})
+        holdout = ""
+    elif args.workload == "tune_me":
         score = subprocess.run([PY, str(ws / "evaluate.py")], capture_output=True, text=True).stdout.strip()
         holdout = subprocess.run([PY, str(ROOT / "sandbox" / "answer_keys" / "tune_me_holdout.py"), str(ws / "model.py")],
                                  capture_output=True, text=True).stdout.strip()

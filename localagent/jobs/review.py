@@ -23,7 +23,8 @@ Check, using the read tools to look at the actual files and notes:
 3. For each context item the worker added: is it something measured or read (supported), or a guess stated as
    fact? List unsupported ones in bad_context_ids.
 
-Then call report_review exactly once. For a fail, give specific, fixable issues with evidence."""
+Be efficient: you have about 15 tool calls. Check the claims that matter most rather than every word, then call
+report_review exactly once. For a fail, give specific, fixable issues with evidence."""
 
 
 def report_review(ctx: ToolContext, verdict: str, issues: list[dict] | None = None,
@@ -47,7 +48,10 @@ REPORT_REVIEW = Tool(
 
 
 class ReviewSession(JobSession):
-    max_steps = 12
+    max_steps = 20
+
+    def wrap_up_tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
+        return [REPORT_REVIEW]
 
     def __init__(self, runner, job: dict, run: dict, task: dict):
         super().__init__(runner, job, run)

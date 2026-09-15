@@ -41,6 +41,11 @@ class Conversation:
     def approvals(self, default):
         return default
 
+    def wrap_up_tools(self, registry: ToolRegistry, ctx) -> list[Tool] | None:
+        """Tools still offered in the final no-more-steps turn (None = text only). Sessions whose only useful
+        output is a tool call, like a reviewer's verdict, return that tool here."""
+        return None
+
     def before_step(self, cancel: threading.Event) -> str | None:
         """Called at each break point (before a model step). Return a reason string to interrupt the run."""
         return None

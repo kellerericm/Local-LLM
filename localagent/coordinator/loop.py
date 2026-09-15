@@ -267,13 +267,26 @@ class Coordinator:
     def _wrap_up(self, conv: Conversation, cancel: threading.Event, outcome: str, max_steps: int) -> str:
         settings = self.settings_getter()
         note = prompts.WRAP_UP_FAILURES if outcome == "needs_help" else prompts.WRAP_UP_STEPS.format(steps=max_steps)
-        self._add(conv, "user", note, kind="coordinator")
         ctx = self._context(conv, cancel)
+        final_tools = conv.wrap_up_tools(self.registry, ctx)
+        if final_tools:
+            names = ", ".join(t.name for t in final_tools)
+            note = f"You're out of steps. Call {names} now with your conclusion so far. Don't call any other tool."
+        self._add(conv, "user", note, kind="coordinator")
         try:
-            text, usage = self._generate(conv, ctx, None, cancel)
+            text, usage = self._generate(conv, ctx, final_tools, cancel)
         except GenerationCancelled:
             return "cancelled"
-        parsed = get_parser(settings.tool_call_format)(text)
+        parsed = get_parser(settings.tool_call_format)(text, [t.schema() for t in final_tools or []])
+        by_name = {t.name: t for t in final_tools or []}
+        allowed = [c for c in parsed.tool_calls if c["name"] in by_name]
+        if allowed:
+            calls = [{"id": f"call_{time.time_ns()}_{i}", **c} for i, c in enumerate(allowed[:1])]
+            self._add(conv, "assistant", parsed.content, reasoning=parsed.reasoning or None, tool_calls=calls,
+                      usage=usage)
+            result = self._execute(ctx, by_name, calls[0], settings)
+            self._add(conv, "tool", result.content, tool_call_id=calls[0]["id"], name=calls[0]["name"], ok=result.ok)
+            return outcome
         content = parsed.content or "(The agent stopped without a summary.)"
         if parsed.tool_calls:
             content += "\n\n[tool calls in this summary were ignored]"

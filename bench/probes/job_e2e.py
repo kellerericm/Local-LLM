@@ -110,12 +110,17 @@ def main():
     ap.add_argument("--permissions", default="", help="comma-separated job permissions, e.g. net:open-access")
     ap.add_argument("--goal", default="")
     ap.add_argument("--title", default="")
+    ap.add_argument("--resume", default="", help="folder of an earlier run: restart its server on the same data with a "
+                                                 "refreshed code snapshot, raise the budget, and resume its job")
     args = ap.parse_args()
     wl = WORKLOADS[args.workload]
 
-    run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}_{args.template}"
+    run_dir = (Path(args.resume) if args.resume else
+               Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}_{args.template}")
     ws = run_dir / (wl["folder"] or "workspace")
-    if wl["folder"]:
+    if args.resume:
+        shutil.rmtree(run_dir / "code" / "localagent", ignore_errors=True)
+    elif wl["folder"]:
         shutil.copytree(ROOT / "sandbox" / wl["folder"], ws)
     else:
         ws.mkdir(parents=True)
@@ -126,7 +131,7 @@ def main():
     global CODE_ROOT
     CODE_ROOT = run_dir / "code"
     shutil.copytree(ROOT / "localagent", CODE_ROOT / "localagent", ignore=shutil.ignore_patterns("__pycache__"))
-    protected = {p: (ws / p).read_bytes() for p in wl["protected"]}
+    protected = {} if args.resume else {p: (ws / p).read_bytes() for p in wl["protected"]}
     data_dir = run_dir / "data"
     server_log = run_dir / "server.log"
     base = f"http://127.0.0.1:{args.port}"
@@ -141,22 +146,31 @@ def main():
     proc = start_server(args.port, data_dir, server_log)
     note("server started", pid=proc.pid)
     c.put("/api/settings", json={"thinking_budget": 2000, "resources": {"idle_unload_minutes": 0}})
-    resp = c.post("/api/projects", json={"name": wl["folder"] or "workspace", "workspace_path": str(ws)})
-    if resp.status_code != 200:
-        kill_tree(proc)
-        raise RuntimeError(f"project creation failed: {resp.text}")
-    project = resp.json()
-    job = c.post("/api/jobs", json={"project_id": project["id"], "title": wl["title"], "goal": wl["goal"],
-                                    "template": args.template,
-                                    "inputs": json.loads(Path(args.inputs_file).read_text(encoding="utf-8"))
-                                    if args.inputs_file else json.loads(args.inputs),
-                                    "permissions": [p for p in args.permissions.split(",") if p],
-                                    "budget": {"max_hours": args.budget_hours, "max_steps": 1000,
-                                               "indefinite": args.indefinite}}).json()
-    job_id = job["id"]
-    note("job created", job_id=job_id)
+    budget = {"max_hours": args.budget_hours, "max_steps": 1000, "indefinite": args.indefinite}
+    if args.resume:
+        import sqlite3
+        con = sqlite3.connect(data_dir / "localagent.sqlite3")
+        job_id, usage = con.execute("select id, usage from jobs order by created_at desc limit 1").fetchone()
+        con.close()
+        c.patch(f"/api/jobs/{job_id}", json={"budget": budget})
+        r = c.post(f"/api/jobs/{job_id}/resume")
+        note("resumed job", job_id=job_id, usage_before=usage, status_code=r.status_code, response=r.text[:200])
+    else:
+        resp = c.post("/api/projects", json={"name": wl["folder"] or "workspace", "workspace_path": str(ws)})
+        if resp.status_code != 200:
+            kill_tree(proc)
+            raise RuntimeError(f"project creation failed: {resp.text}")
+        project = resp.json()
+        job = c.post("/api/jobs", json={"project_id": project["id"], "title": wl["title"], "goal": wl["goal"],
+                                        "template": args.template,
+                                        "inputs": json.loads(Path(args.inputs_file).read_text(encoding="utf-8"))
+                                        if args.inputs_file else json.loads(args.inputs),
+                                        "permissions": [p for p in args.permissions.split(",") if p],
+                                        "budget": budget}).json()
+        job_id = job["id"]
+        note("job created", job_id=job_id)
 
-    killed = False
+    killed = bool(args.resume)        # the kill-and-restart check belongs to the original run
     last = None
     while time.time() < deadline:
         try:

@@ -63,6 +63,11 @@ python -m localagent
   ```powershell
   python -c "from huggingface_hub import snapshot_download as d; d('Qwen/Qwen3.5-9B', cache_dir=r'D:\LocalAgent\models')"
   ```
+- **Recommended once:** save a pre-quantized copy, so every later load takes seconds and skips the RAM spike:
+  ```powershell
+  python -m localagent.backend.quantize_copy --model Qwen/Qwen3.5-9B --out "D:\LocalAgent\models\local\Qwen3.5-9B-bnb-4bit"
+  ```
+  It checks that the copy gives identical answers (see `verify.json` in that folder). LocalAgent then uses the copy automatically whenever the model is `Qwen/Qwen3.5-9B` with 4-bit quantization.
 - To pick a model based on evidence, see `experiments.md` and run the benchmark (step 9).
 
 ## 8. Open it from a shortcut (optional)

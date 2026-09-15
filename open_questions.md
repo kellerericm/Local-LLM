@@ -12,7 +12,13 @@ Directions to look into (unevaluated):
 ## Tool-call reliability of small local models
 How much coordinator scaffolding (argument repair, retries, constrained decoding) is needed before an 8–14B model follows multi-step task lists reliably? The model benchmark should answer this.
 
-## Pre-quantized copy of the default model
+## Pre-quantized copy of the default model — done (2026-09-14)
+- **Answer:** `python -m localagent.backend.quantize_copy` saved `D:\LocalAgent\models\local\Qwen3.5-9B-bnb-4bit`.
+- **Verification:** greedy outputs identical on 3/3 prompts; load time 7 s vs 51 s; disk 7.4 GB vs 18 GB. The vision tower stays unquantized.
+- **Integration:** the app uses the copy automatically when it exists (`server/runtime.py: resolve_model_path`).
+- **Caveat:** image-processor files weren't saved (they need pillow and torchvision), which doesn't matter for text use.
+
+### Original question
 Qwen3.5-9B ships as bf16 (~18 GB) and is quantized to 4-bit on every load. That costs ~50 s and a ~19 GB spike in system RAM, which was enough to get another process killed during benchmarking. Saving a 4-bit copy to `D:\LocalAgent\models` once should cut both.
 - Does `save_pretrained` round-trip a bnb-4bit *multimodal* checkpoint correctly in transformers 5, with the vision tower left unquantized?
 - Is output identical? Spot-check against the bf16 load and rerun the benchmark.

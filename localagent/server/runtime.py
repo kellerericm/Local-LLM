@@ -19,6 +19,17 @@ from ..tools import default_registry
 log = logging.getLogger(__name__)
 
 
+def resolve_model_path(settings: Settings) -> str:
+    """Prefer a pre-quantized local copy (made by `python -m localagent.backend.quantize_copy`) when one exists:
+    <models_dir>/local/<model name>-bnb-4bit. It loads in seconds without the ~19 GB RAM spike."""
+    model_id = settings.model_id
+    if settings.quantization == "4bit" and "/" in model_id and not Path(model_id).is_absolute():
+        candidate = Path(settings.models_dir) / "local" / f"{model_id.rsplit('/', 1)[-1]}-bnb-4bit"
+        if (candidate / "config.json").is_file():
+            return str(candidate)
+    return model_id
+
+
 class EventBus:
     """Fan out events from worker threads to every connected WebSocket."""
 
@@ -118,7 +129,7 @@ class Runtime:
 
     def model_spec(self) -> dict:
         s = self.settings
-        return {"model_id": s.model_id, "quantization": s.quantization, "max_vram_gb": s.resources.max_vram_gb,
+        return {"model_id": resolve_model_path(s), "quantization": s.quantization, "max_vram_gb": s.resources.max_vram_gb,
                 "cpu_threads": s.resources.cpu_threads, "cache_dir": str(Path(s.models_dir)),
                 "offload": s.resources.offload, "max_cpu_ram_gb": s.resources.max_cpu_ram_gb}
 

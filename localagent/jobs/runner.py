@@ -23,7 +23,7 @@ from .models import (ACTIVE_JOB_STATUSES, AWAITING_APPROVAL, CANCELLED, DONE, FA
                      WAITING_USER, JobStore)
 from .planner import leaves, next_ready_leaf
 from .review import ReviewSession, review_request
-from .sessions import JobApprover, PlanSession, TaskSession
+from .sessions import JobApprover, PlanSession, TaskSession, job_project
 from .templates import HandlerResult, get_template
 
 log = logging.getLogger(__name__)
@@ -551,7 +551,7 @@ class JobRunner:
         if not task["checks"]:
             return []
         settings = self.settings_getter()
-        project = self.store.get_project(job["project_id"])
+        project = job_project(self.store, self.jobs.get_job(job["id"]) or job)
         workspace = Path(project["workspace_path"])
         env_path = Path(project["env_path"] or settings.env_path)
         guard = PathGuard(workspace, env_path)

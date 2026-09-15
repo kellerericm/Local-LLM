@@ -15,6 +15,16 @@ from .tools import (ADD_NOTE, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PL
 READ_ONLY_TOOLS = ("read_file", "read_document", "list_dir", "glob", "grep")
 
 
+def job_project(store, job: dict) -> dict | None:
+    """The project as a job's sessions see it. Templates may point a job at an isolated working copy
+    (job.inputs.work_dir), e.g. auto-research experiments that must not touch the original until accepted."""
+    project = store.get_project(job["project_id"])
+    work_dir = (job.get("inputs") or {}).get("work_dir")
+    if project and work_dir:
+        project = {**project, "workspace_path": work_dir}
+    return project
+
+
 class JobApprover:
     """Approvals for unattended jobs.
 
@@ -69,7 +79,7 @@ class JobSession(Conversation):
         return {"job_id": self.job["id"], "run_id": self.run["id"]}
 
     def project(self) -> dict | None:
-        return self.store.get_project(self.job["project_id"])
+        return job_project(self.store, self.job)
 
     def messages(self) -> list[dict]:
         return self.jobs.list_run_messages(self.run["id"])

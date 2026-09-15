@@ -15,6 +15,15 @@ A failure is information, not a verdict.
   - Acquisition tries all OpenAlex OA locations, Europe PMC, Semantic Scholar openAccessPdf, and an arXiv title search.
   - The harness answers any waiting task; the schema lists all inputs.
 - **Status:** fixes in progress.
+- **Rerun 2026-09-15 05:50 (after the fixes above): 0/4 papers obtained; stopped by hand.**
+  1. Every PDF location returned 403 to scripts (Wiley, Cell, and Europe PMC's `?pdf=render` links) or an HTML page. 3 of the 4 papers are open access in PubMed Central.
+  2. With 0 papers read, the citation step called it "converged" and the job went straight to planning a report with no sources.
+  3. The first attempt at this rerun crashed in the harness itself: printing a paper title with U+2010 to the cp1252 console.
+  - **Fixes:**
+    - Europe PMC REST full text (JATS XML → markdown with real section headings and a clean reference list) is used when no PDF downloads. Verified live on 3/4 of these papers.
+    - The citation step asks the user when no papers were read.
+    - Papers over `max_parts` (default 12 parts, ~48 pages) ask before reading; that review is 53 parts.
+    - Harness stdout is UTF-8.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

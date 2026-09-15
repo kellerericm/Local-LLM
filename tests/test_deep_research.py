@@ -39,6 +39,9 @@ class FakeScholar:
     def candidate_pdf_urls(self, paper):
         return ["https://publisher.example/landing.html"] + ([paper["oa_pdf_url"]] if paper.get("oa_pdf_url") else [])
 
+    def full_text(self, paper):
+        return None
+
     def download_pdf(self, url, dest):
         if url.endswith(".html"):                          # publisher pages return HTML, not a PDF
             return False
@@ -212,3 +215,95 @@ def test_config_defaults_match_decisions():
     c = cfg({"inputs": {}})
     assert (c["max_papers"], c["max_rounds"], c["min_citations"], c["min_fraction"]) == (60, 4, 3, 0.15)
     assert pdf_path("oa:W1").startswith("papers/pdf/")
+
+
+JATS = b"""<?xml version="1.0"?>
+<!DOCTYPE article PUBLIC "-//NLM//DTD JATS//EN" "JATS-archivearticle1.dtd">
+<article xmlns:xlink="http://www.w3.org/1999/xlink"><front><article-meta><title-group>
+<article-title>Replay and planning</article-title></title-group>
+<abstract><p>We study <italic>replay</italic>.</p></abstract></article-meta></front>
+<body><sec><title>Introduction</title><p>Replay reactivates sequences (<xref ref-type="bibr">Foster, 2006</xref>).</p>
+<sec><title>Background</title><p>Sharp waves&nbsp;matter.</p></sec></sec>
+<sec><title>Methods</title><p>Rats ran.</p><fig><label>Figure 1</label><caption><p>A maze.</p></caption></fig></sec></body>
+<back><ref-list><ref id="r1"><mixed-citation><string-name><surname>Foster</surname> <given-names>DJ</given-names></string-name>.
+<year>2006</year> <article-title>Reverse replay</article-title>. <source>Nat Neurosci</source>
+<pub-id pub-id-type="pmid">123</pub-id><pub-id pub-id-type="doi">10.1038/nn1961</pub-id></mixed-citation></ref></ref-list></back>
+</article>"""
+
+
+def test_jats_to_markdown_keeps_sections_captions_and_references():
+    from localagent.jobs.scholar import jats_to_markdown
+    md = jats_to_markdown(JATS)
+    assert md.startswith("# Replay and planning")
+    for line in ("## Abstract", "## Introduction", "### Background", "## Methods", "Figure 1: A maze.", "## References"):
+        assert line in md
+    assert "Replay reactivates sequences (Foster, 2006)." in md
+    assert "Reverse replay" in md and "doi:10.1038/nn1961" in md and "123" not in md.split("## References")[1]
+    parts, refs = split_paper(md)
+    assert refs.startswith("## References") and "Reverse replay" not in "".join(p for _, p in parts)
+
+
+class NoPdfScholar(FakeScholar):
+    def __init__(self, workspace, texts=None):
+        super().__init__(workspace)
+        self.texts = texts or {}
+
+    def download_pdf(self, url, dest):
+        self.downloads.append(url)
+        return False
+
+    def full_text(self, paper):
+        text = self.texts.get(paper["title"])
+        return (text, "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1/fullTextXML") if text else None
+
+
+def start_query_job(env, **inputs):
+    job = make_job(env, **inputs)
+    env.runner._tick()
+    env.runner.approve_plan(job["id"])
+    env.runner._tick()
+    env.runner._tick()
+    gate = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "seed_gate")
+    env.runner.answer(job["id"], "approve", gate["id"])
+    return job
+
+
+def task_by_key(env, job, key):
+    return next((t for t in env.jobs.list_tasks(job["id"]) if t["key"] == key), None)
+
+
+def test_full_text_fallback_and_long_paper_question(env_factory, workspace):
+    body = "\n\n".join(f"## Section {i}\n\n" + ("Replay text. " * 1000) for i in range(30))
+    texts = {"Paper A": "# Paper A\n\n## Introduction\n\nShort paper about replay.\n\n## Methods\n\nRats.\n\n"
+                        "## Discussion\n\n" + "More. " * 400 + "\n\n## References\n\nFoster DJ. 2006 Reverse replay.",
+             "Paper B": "# Paper B\n\n" + body}
+    env = env_factory([])
+    env.runner.scholar = NoPdfScholar(workspace, texts)
+    job = start_query_job(env, seed_count="2")
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "a0_2")["status"] == "waiting_user")
+    a = {p["title"]: p for p in env.jobs.list_papers(job["id"])}
+    assert a["Paper A"]["file_path"].startswith("papers/text/") and a["Paper A"]["provenance"]["source"].startswith(
+        "open-access full text")
+    assert (workspace / a["Paper A"]["provenance"]["folder"] / "references.txt").read_text(encoding="utf-8").count(
+        "Foster") == 1
+    assert task_by_key(env, job, "w0_1") is not None                     # reading tasks for A were added
+    q = task_by_key(env, job, "a0_2")["question"]
+    assert "is long" in q and "read all" in q
+    env.runner.answer(job["id"], "read all", task_by_key(env, job, "a0_2")["id"])
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "w0_2") is not None)
+    n = a["Paper B"]["provenance"] and env.jobs.get_paper(job["id"], a["Paper B"]["key"])["provenance"]["parts"]
+    assert n > 12 and task_by_key(env, job, f"p0_2_{n}") is not None
+
+
+def test_no_papers_read_asks_before_writing_an_empty_report(env_factory, workspace):
+    env = env_factory([])
+    env.runner.scholar = NoPdfScholar(workspace)
+    job = start_query_job(env, seed_count="2")
+    for key in ("a0_1", "a0_2"):
+        assert tick_until(env, job["id"], lambda: task_by_key(env, job, key)["status"] == "waiting_user")
+        env.runner.answer(job["id"], "skip", task_by_key(env, job, key)["id"])
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "cite_r0")["status"] == "waiting_user")
+    assert "No papers could be read" in task_by_key(env, job, "cite_r0")["question"]
+    assert task_by_key(env, job, "layout") is None
+    env.runner.answer(job["id"], "continue", task_by_key(env, job, "cite_r0")["id"])
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "layout") is not None)

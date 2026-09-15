@@ -30,6 +30,8 @@ place and a short summary of what worked in experiments.md."""
 
 
 def log(msg: str) -> None:
+    if hasattr(sys.stdout, "reconfigure"):        # paper titles contain characters the Windows console codepage lacks
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(f"[{dt.datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 

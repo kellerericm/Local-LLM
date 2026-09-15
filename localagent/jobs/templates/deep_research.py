@@ -19,7 +19,7 @@ from .base import HandlerResult, Template, is_approval
 from .research_report import compile_report, find_sources, slug, workspace_of
 
 DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4, "min_citations": 3,
-            "min_fraction": 0.15, "per_round": 8, "seed_count": 10, "format": "md"}
+            "min_fraction": 0.15, "per_round": 8, "seed_count": 10, "max_parts": 12, "format": "md"}
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
@@ -64,7 +64,7 @@ findings, the key disagreements, and the conclusion. Cite the most important not
 
 def cfg(job: dict) -> dict:
     c = {**DEFAULTS, **{k: v for k, v in (job.get("inputs") or {}).items() if v not in (None, "")}}
-    for k in ("max_papers", "max_rounds", "min_citations", "per_round", "seed_count"):
+    for k in ("max_papers", "max_rounds", "min_citations", "per_round", "seed_count", "max_parts"):
         c[k] = int(c[k])
     c["min_fraction"] = float(c["min_fraction"])
     return c
@@ -89,6 +89,10 @@ def paper_md(key: str) -> str:
 
 def pdf_path(key: str) -> str:
     return f"{PDF_DIR}/{slug(key.replace(':', '-'))[:60]}.pdf"
+
+
+def text_path(key: str) -> str:
+    return f"papers/text/{slug(key.replace(':', '-'))[:60]}.md"
 
 
 def register_work(runner, job, w: Work, round_: int, status: str = "queued", cited_by: int = 0) -> dict:
@@ -144,15 +148,17 @@ def expand_round(runner, job, round_: int) -> int:
 _HEADING = re.compile(r"^\s*(?:\d+(?:\.\d+)*\.?\s+)?(abstract|introduction|background|related work|methods?|materials and "
                       r"methods|experimental procedures|results(?: and discussion)?|discussion|conclusions?|summary|"
                       r"general discussion|references|bibliography|literature cited|acknowledg(?:e)?ments?)\s*$", re.I)
+_MD_HEADING = re.compile(r"^#{1,6}\s+")
 _NUMBERED = re.compile(r"^\s*\d{1,2}(?:\.\d{1,2})*\.?\s+[A-Z][^.!?\d()]{2,80}$")    # not page headers like "194 Journal (2012)"
 
 
 def split_paper(text: str) -> tuple[list[tuple[str, str]], str]:
     """Split extracted paper text into parts of about PART_CHARS at section headings; return (parts, references)."""
     lines = text.splitlines()
+    markdown = sum(1 for l in lines if _MD_HEADING.match(l)) >= 3          # e.g. full text converted from PMC XML
     ref_start = None
     for i in range(len(lines) - 1, len(lines) // 3, -1):
-        m = _HEADING.match(lines[i])
+        m = _HEADING.match(_MD_HEADING.sub("", lines[i]))
         if m and m.group(1).lower() in ("references", "bibliography", "literature cited"):
             ref_start = i
             break
@@ -160,8 +166,8 @@ def split_paper(text: str) -> tuple[list[tuple[str, str]], str]:
     references = "" if ref_start is None else "\n".join(lines[ref_start:])
     sections: list[tuple[str, list[str]]] = [("Beginning", [])]
     for line in body_lines:
-        if _HEADING.match(line) or _NUMBERED.match(line):
-            sections.append((line.strip()[:80], [line]))
+        if _MD_HEADING.match(line) if markdown else (_HEADING.match(line) or _NUMBERED.match(line)):
+            sections.append((_MD_HEADING.sub("", line).strip()[:80], [line]))
         else:
             sections[-1][1].append(line)
     parts: list[tuple[str, str]] = []
@@ -327,12 +333,17 @@ def handle_seed(runner, job, task) -> HandlerResult:
     return HandlerResult(True, f"Registered {len(papers)} seed paper(s); listed in seeds.md.")
 
 
-def _ready(runner, job, p: dict, summary: str) -> HandlerResult:
+def _ready(runner, job, task, p: dict, summary: str, answer: str) -> HandlerResult:
     try:
         n = prepare_parts(runner, job, runner.jobs.get_paper(job["id"], p["key"]))
     except Exception as e:
         runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable")
         return HandlerResult(True, f"{summary} But the text couldn't be extracted ({e}); skipping this paper.")
+    limit = cfg(job)["max_parts"]
+    if n > limit and "read all" not in answer:
+        return HandlerResult(False, f"Long paper ({n} parts)", wait_question=(
+            f"\"{p['title']}\" is long: {n} parts (about {n * PART_CHARS // 3000} pages), more than the {limit}-part "
+            "limit per paper. Reply 'read all' to read it section by section anyway, or 'skip'."))
     warning = (runner.jobs.get_paper(job["id"], p["key"]).get("provenance") or {}).get("extraction_warning")
     return HandlerResult(True, f"{summary} Split into {n} part(s)." + (f" Warning: {warning}" if warning else ""))
 
@@ -342,19 +353,20 @@ def handle_acquire(runner, job, task) -> HandlerResult:
 
     ws = workspace_of(runner, job)
     p = runner.jobs.get_paper(job["id"], task["params"]["paper"])
+    answers = [m.group(1).lower() for g in task["guidance"] for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
+    answer = answers[-1] if answers else ""
+    if "skip" in answer:
+        runner.jobs.upsert_paper(job["id"], p["key"], status="skipped")
+        return HandlerResult(True, "Skipped at your request.")
     if p["file_path"] and (ws / p["file_path"]).is_file():
         runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
-        return _ready(runner, job, p, f"Using {p['file_path']}.")
+        return _ready(runner, job, task, p, f"Using {p['file_path']}.", answer)
     target = pdf_path(p["key"])
     if (ws / target).is_file():
         runner.jobs.upsert_paper(job["id"], p["key"], file_path=target, status="reading",
                                  provenance={"source": "added by user"})
-        return _ready(runner, job, p, f"Using {target} (added by you).")
-    answers = [m.group(1).lower() for g in task["guidance"] for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
-    if answers and "skip" in answers[-1]:
-        runner.jobs.upsert_paper(job["id"], p["key"], status="skipped")
-        return HandlerResult(True, "Skipped at your request.")
-    require_network(runner, job, task, f"Find and download an open-access PDF of \"{p['title']}\"")
+        return _ready(runner, job, task, p, f"Using {target} (added by you).", answer)
+    require_network(runner, job, task, f"Find and download an open-access copy of \"{p['title']}\"")
     client = scholar(runner)
     tried = []
     for url in client.candidate_pdf_urls(p):
@@ -363,12 +375,21 @@ def handle_acquire(runner, job, task) -> HandlerResult:
             if client.download_pdf(url, ws / target):
                 runner.jobs.upsert_paper(job["id"], p["key"], file_path=target, status="reading", provenance={
                     "source": "open-access download", "url": url, "retrieved": dt.datetime.now().isoformat()})
-                return _ready(runner, job, p, f"Downloaded the open-access PDF from {url}.")
+                return _ready(runner, job, task, p, f"Downloaded the open-access PDF from {url}.", answer)
         except Exception as e:
             runner.jobs.journal(job["id"], "acquire", f"Download failed from {url}: {e}", task["key"])
+    full = client.full_text(p)
+    if full:
+        text, url = full
+        rel = text_path(p["key"])
+        (ws / rel).parent.mkdir(parents=True, exist_ok=True)
+        (ws / rel).write_text(text, encoding="utf-8")
+        runner.jobs.upsert_paper(job["id"], p["key"], file_path=rel, status="reading", provenance={
+            "source": "open-access full text (Europe PMC)", "url": url, "retrieved": dt.datetime.now().isoformat()})
+        return _ready(runner, job, task, p, f"Saved the open-access full text from Europe PMC to {rel}.", answer)
     if tried:
-        runner.jobs.journal(job["id"], "acquire", f"No usable PDF for \"{p['title']}\" from {len(tried)} open-access "
-                                                  "location(s).", task["key"])
+        runner.jobs.journal(job["id"], "acquire", f"No usable PDF or full text for \"{p['title']}\" "
+                                                  f"({len(tried)} PDF location(s) tried).", task["key"])
     runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable")
     year = f" ({p['year']})" if p["year"] else ""
     return HandlerResult(False, "No open-access copy", wait_question=(
@@ -388,6 +409,15 @@ def handle_citations(runner, job, task) -> HandlerResult:
     round_ = int(task["params"]["round"])
     papers = runner.jobs.list_papers(job["id"])
     read = [p for p in papers if p["status"] == "read"]
+    if not read:
+        answers = [m.group(1).lower() for g in task["guidance"]
+                   for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
+        if not (answers and "continue" in answers[-1]):
+            missing = [p["title"] for p in papers if p["status"] in ("unavailable", "skipped")]
+            return HandlerResult(False, "No papers were read", wait_question=(
+                f"No papers could be read so far ({len(missing)} unavailable or skipped; see the job journal). "
+                "A report now would have no sources. Stop the job and start again with a folder of PDFs or a "
+                "different query, or reply 'continue' to go on anyway."))
     known = {p["key"] for p in papers}
     counts: dict[str, int] = {}
     info: dict[str, dict] = {}
@@ -547,6 +577,8 @@ DEEP_RESEARCH = register(DeepResearch(
         "min_fraction": {"type": "string", "label": "…or by at least this fraction of papers read", "default": "0.15"},
         "seed_count": {"type": "string", "label": "Seed papers from a search", "default": "10"},
         "per_round": {"type": "string", "label": "Cited papers to add per round", "default": "8"},
+        "max_parts": {"type": "string", "label": "Ask before reading papers longer than (parts of ~4 pages)",
+                      "default": "12"},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },
     handlers={"seed": handle_seed, "acquire": handle_acquire, "citations": handle_citations, "compile": handle_compile},

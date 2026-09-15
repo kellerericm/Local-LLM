@@ -88,6 +88,66 @@ def work_from_openalex(d: dict) -> Work:
     )
 
 
+def _local(tag) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _text(el) -> str:
+    return re.sub(r"\s+", " ", "".join(el.itertext())).strip()
+
+
+def jats_to_markdown(xml: bytes | str) -> str:
+    """Convert a JATS article (PMC full text) to markdown: title, abstract, body sections as headings, figure captions,
+    and a References section with one entry per line."""
+    import xml.etree.ElementTree as ET
+
+    if isinstance(xml, bytes):
+        xml = xml.decode("utf-8", errors="replace")
+    xml = re.sub(r"<!DOCTYPE[^>]*>", "", xml, count=1)
+    xml = re.sub(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)\w+;", " ", xml)   # DTD entities we can't resolve
+    root = ET.fromstring(xml)
+    out: list[str] = []
+    title = next((e for e in root.iter() if _local(e.tag) == "article-title"), None)
+    if title is not None:
+        out += [f"# {_text(title)}", ""]
+    for abstract in [e for e in root.iter() if _local(e.tag) == "abstract"][:1]:
+        out += ["## Abstract", ""] + [_text(p) + "\n" for p in abstract.iter() if _local(p.tag) == "p"]
+
+    def walk(el, depth: int) -> None:
+        for child in el:
+            tag = _local(child.tag)
+            if tag == "sec":
+                head = next((c for c in child if _local(c.tag) == "title"), None)
+                if head is not None and _text(head):
+                    out.extend([f"{'#' * min(depth, 4)} {_text(head)}", ""])
+                walk(child, depth + 1)
+            elif tag == "p":
+                out.extend([_text(child), ""])
+            elif tag in ("list", "list-item", "boxed-text"):
+                walk(child, depth)
+            elif tag in ("fig", "table-wrap"):
+                label = next((_text(c) for c in child if _local(c.tag) == "label"), "")
+                caption = next((_text(c) for c in child if _local(c.tag) == "caption"), "")
+                if caption:
+                    out.extend([f"{label or 'Figure'}: {caption}", ""])
+
+    body = next((e for e in root.iter() if _local(e.tag) == "body"), None)
+    if body is not None:
+        walk(body, 2)
+    refs = [e for e in root.iter() if _local(e.tag) == "ref"]
+    if refs:
+        out += ["## References", ""]
+        for ref in refs:
+            ids = {c.get("pub-id-type"): _text(c) for c in ref.iter() if _local(c.tag) == "pub-id"}
+            for c in list(ref.iter()):
+                for g in [g for g in c if _local(g.tag) in ("pub-id", "label")]:
+                    g.text, g.tail = "", (g.tail or "")
+                    g.clear()
+            entry = _text(ref) + (f" doi:{ids['doi']}" if ids.get("doi") else "")
+            out.append(re.sub(r"\s+([,.;:])", r"\1", entry))
+    return "\n".join(out).strip() + "\n"
+
+
 class ScholarClient:
     def __init__(self, mailto: str | None = None, min_interval_s: float = 0.2):
         self.mailto = mailto
@@ -186,6 +246,37 @@ class ScholarClient:
             except Exception:
                 pass
         return urls
+
+    def full_text(self, paper: dict) -> tuple[str, str] | None:
+        """Open-access full text as markdown from Europe PMC's REST API (JATS XML), for papers whose PDF hosts refuse
+        scripted downloads. Returns (markdown, url) or None."""
+        doi = paper.get("doi")
+        query = f'DOI:"{doi}"' if doi else (f'TITLE:"{paper["title"]}"' if paper.get("title") else None)
+        if not query:
+            return None
+        try:
+            data = self._get("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+                             {"query": query, "format": "json", "resultType": "lite"})
+        except Exception:
+            return None
+        for r in (data.get("resultList") or {}).get("result", []):
+            if not (r.get("pmcid") and r.get("isOpenAccess") == "Y"):
+                continue
+            if not doi and normalize_title(r.get("title", "")) != normalize_title(paper["title"]):
+                continue
+            url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{r['pmcid']}/fullTextXML"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/xml"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    xml = resp.read(MAX_PDF_BYTES + 1)
+                if len(xml) > MAX_PDF_BYTES:
+                    continue
+                text = jats_to_markdown(xml)
+            except Exception:
+                continue
+            if len(text) > 2000:
+                return text, url
+        return None
 
     def download_pdf(self, url: str, dest: Path) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/pdf,*/*;q=0.8"})

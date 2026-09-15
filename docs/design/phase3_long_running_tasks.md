@@ -345,6 +345,10 @@ Extend `bench/` with long-horizon checks built on `sandbox/`:
   - score is bits-per-byte on hidden Shakespeare text, via `answer_keys/lm_speedrun_eval.py`
   - 80/20 train/test by default; `--split 80/10/10` adds a validation set for keep/revert on long runs
   - metrics: best test bpb vs baseline, number of experiments, keep/revert correctness, budget and memory-cap violations
+- **deep_research final test** (chosen by the user, 2026-09-14): *biological mechanisms and machine-learning approaches to improving long-term memory and planning*, seeded by a search query.
+  - It doubles as input for Phase 5 (longer-term memory research, open_questions.md). The resulting report becomes a project reference.
+  - Judged on: convergence behavior (rounds, papers, stopping reason), quote verification rate, foundational works identified and analyzed, report structure (abstract, literature review, conclusion and summary), reviewer pass rate, and a human read of the report.
+  - Before that, a smaller dry run on a handful of local PDFs checks the loop mechanics.
 - **Resume test:** kill the server mid-job, restart, and confirm the job completes with no duplicated notes or lost progress.
 - **Preemption test:** chat latency while a job runs.
 

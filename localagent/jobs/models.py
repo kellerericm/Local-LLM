@@ -88,6 +88,26 @@ CREATE TABLE IF NOT EXISTS scratch_items(
     task_key TEXT,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notes(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    task_key TEXT,
+    source TEXT NOT NULL,
+    location TEXT,
+    claim TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    tags TEXT,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_job ON notes(job_id, source);
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(claim, quote, source, tags, content='notes', content_rowid='id');
+CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+    INSERT INTO notes_fts(rowid, claim, quote, source, tags) VALUES (new.id, new.claim, new.quote, new.source, new.tags);
+END;
+CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, claim, quote, source, tags)
+    VALUES ('delete', old.id, old.claim, old.quote, old.source, old.tags);
+END;
 CREATE TABLE IF NOT EXISTS journal(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -287,6 +307,35 @@ class JobStore:
         for iid in item_ids:
             removed += self.s._exec("DELETE FROM scratch_items WHERE job_id=? AND id=?", (job_id, int(iid))).rowcount
         return removed
+
+    # -- notes (evidence with verified quotes) -------------------------------------------
+    def add_note(self, job_id: str, source: str, claim: str, quote: str, location: str = "", tags: list[str] | None = None,
+                 task_key: str | None = None) -> dict:
+        cur = self.s._exec(
+            "INSERT INTO notes(job_id,task_key,source,location,claim,quote,tags,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (job_id, task_key, source, location, claim, quote, " ".join(tags or []), time.time()))
+        return self.s._one("SELECT * FROM notes WHERE id=?", (cur.lastrowid,))
+
+    def list_notes(self, job_id: str, source: str | None = None) -> list[dict]:
+        if source:
+            return self.s._all("SELECT * FROM notes WHERE job_id=? AND source=? ORDER BY id", (job_id, source))
+        return self.s._all("SELECT * FROM notes WHERE job_id=? ORDER BY source, id", (job_id,))
+
+    def get_note(self, job_id: str, note_id: int) -> dict | None:
+        return self.s._one("SELECT * FROM notes WHERE job_id=? AND id=?", (job_id, note_id))
+
+    def search_notes(self, job_id: str, query: str, source: str | None = None, limit: int = 10) -> list[dict]:
+        tokens = [t for t in re.findall(r"\w+", query.lower()) if len(t) > 1]
+        if not tokens:
+            return self.list_notes(job_id, source)[:limit]
+        match = " OR ".join(f'"{t}"' for t in tokens[:20])
+        sql = ("SELECT n.* FROM notes_fts f JOIN notes n ON n.id = f.rowid WHERE notes_fts MATCH ? AND n.job_id=?"
+               + (" AND n.source=?" if source else "") + " ORDER BY bm25(notes_fts) LIMIT ?")
+        params = (match, job_id, source, limit) if source else (match, job_id, limit)
+        return self.s._all(sql, params)
+
+    def delete_note(self, job_id: str, note_id: int) -> bool:
+        return self.s._exec("DELETE FROM notes WHERE job_id=? AND id=?", (job_id, note_id)).rowcount > 0
 
     # -- journal -----------------------------------------------------------------
     def journal(self, job_id: str, kind: str, text: str, task_key: str | None = None) -> dict:

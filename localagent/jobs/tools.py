@@ -70,6 +70,47 @@ def update_checklist(ctx: ToolContext, items: list[dict]) -> ToolResult:
     return ToolResult(f"Checklist saved ({done}/{len(checklist)} done):\n{render_checklist(checklist)}")
 
 
+def _source_name(ctx: ToolContext, path) -> str:
+    try:
+        return path.relative_to(ctx.guard.resolve(ctx.workspace)).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: str = "",
+             tags: list[str] | None = None) -> ToolResult:
+    from ..tools.documents_tool import doc_cache
+    from .documents import closest_snippet, extract, find_quote
+
+    conv = ctx.conversation
+    path = ctx.check_path(source, "read")
+    if not path.is_file():
+        return ToolResult(f"Source file not found: {source}. Use the path of the document you read.", ok=False)
+    try:
+        text = extract(path, doc_cache(ctx)).text
+    except Exception as e:
+        return ToolResult(f"Couldn't read {source} to verify the quote: {e}", ok=False)
+    if not find_quote(text, quote):
+        near = closest_snippet(text, quote)
+        hint = f" The closest passage is: \"{near}\"" if near else ""
+        return ToolResult("Note not saved: the quote doesn't appear word for word in the source. Copy the exact words "
+                          f"(a shorter exact quote is fine).{hint}", ok=False)
+    task_key = getattr(conv, "task", None) and conv.task["key"]
+    note = conv.jobs.add_note(conv.job["id"], _source_name(ctx, path), claim.strip(), quote.strip(), location.strip(),
+                              tags, task_key)
+    conv.runner._changed(conv.job["id"])
+    return ToolResult(f"Saved note n{note['id']} (quote verified in {note['source']}). Cite it as [n{note['id']}].")
+
+
+def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10) -> ToolResult:
+    conv = ctx.conversation
+    notes = conv.jobs.search_notes(conv.job["id"], query, source or None, limit)
+    if not notes:
+        return ToolResult("No matching notes." + (" Try fewer or different words." if query else ""))
+    return ToolResult("\n".join(f"[n{n['id']}] ({n['source']}{', ' + n['location'] if n['location'] else ''}) "
+                                f"{n['claim']} — \"{n['quote'][:300]}\"" for n in notes))
+
+
 def job_ask_user(ctx: ToolContext, question: str) -> ToolResult:
     ctx.conversation.result = {"kind": "ask", "question": question.strip()}
     return ToolResult("Your question was sent to the user. This task will wait for the answer; other tasks continue.",
@@ -142,6 +183,27 @@ UPDATE_CHECKLIST = Tool(
         "type": "object", "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}},
         "required": ["text", "done"]}}}, "required": ["items"]},
     update_checklist, "job")
+
+ADD_NOTE = Tool(
+    "add_note",
+    "Save one piece of evidence: a claim from a source, with an exact supporting quote. The quote is checked against "
+    "the source text and rejected if it isn't word for word. Returns an id to cite as [n12].",
+    {"type": "object", "properties": {
+        "claim": {"type": "string", "minLength": 5, "description": "the point, in your words"},
+        "quote": {"type": "string", "minLength": 8, "description": "exact words from the source"},
+        "source": {"type": "string", "description": "path of the source document"},
+        "location": {"type": "string", "description": "section, page, or line, e.g. 'p. 4' or 'Results'"},
+        "tags": {"type": "array", "items": {"type": "string"}}},
+     "required": ["claim", "quote", "source"]},
+    add_note, "job")
+
+SEARCH_NOTES = Tool(
+    "search_notes",
+    "Search this job's saved notes by keywords, optionally for one source. Returns note ids, claims, and quotes.",
+    {"type": "object", "properties": {
+        "query": {"type": "string"}, "source": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50}}},
+    search_notes, "job")
 
 JOB_ASK_USER = Tool(
     "ask_user",

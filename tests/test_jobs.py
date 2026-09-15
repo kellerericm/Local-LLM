@@ -161,7 +161,8 @@ def test_planning_session_retries_after_lint_and_waits_for_approval(env_factory,
     assert "not accepted" in tool_msgs[1]["content"]
     # Planning tools are read-only plus the job tools.
     tool_names = {t["function"]["name"] for t in env.backend.calls[0]["tools"]}
-    assert tool_names == {"read_file", "list_dir", "glob", "grep", "update_context", "propose_plan", "ask_user"}
+    assert tool_names == {"read_file", "read_document", "list_dir", "glob", "grep", "search_notes", "update_context",
+                          "propose_plan", "ask_user"}
     folder = workspace / "jobs" / job["slug"]
     assert (folder / "README.md").exists() and "LocalAgent job" in (folder / "README.md").read_text(encoding="utf-8")
     assert "[t2] Summarize" in (folder / "plan.md").read_text(encoding="utf-8")

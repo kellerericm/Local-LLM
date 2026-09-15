@@ -136,10 +136,10 @@ def validate_args(tool: Tool, args: Any) -> str | None:
 
 
 def default_registry() -> ToolRegistry:
-    from . import fs, projects, python_exec, shell, tasks
+    from . import documents_tool, fs, projects, python_exec, shell, tasks
 
     reg = ToolRegistry()
-    for module in (fs, shell, python_exec, tasks, projects):
+    for module in (fs, documents_tool, shell, python_exec, tasks, projects):
         for tool in module.TOOLS:
             reg.register(tool)
     return reg

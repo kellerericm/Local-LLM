@@ -9,9 +9,10 @@ from ..tools.registry import ApprovalPending, Tool, ToolRegistry
 from . import prompts
 from .checks import describe
 from .scratchpad import render_block
-from .tools import COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PLAN, UPDATE_CHECKLIST, UPDATE_CONTEXT
+from .tools import (ADD_NOTE, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PLAN, SEARCH_NOTES, UPDATE_CHECKLIST,
+                    UPDATE_CONTEXT)
 
-READ_ONLY_TOOLS = ("read_file", "list_dir", "glob", "grep")
+READ_ONLY_TOOLS = ("read_file", "read_document", "list_dir", "glob", "grep")
 
 
 class JobApprover:
@@ -106,7 +107,8 @@ class PlanSession(JobSession):
 
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
         available = {t.name: t for t in registry.available(ctx)}
-        return [available[n] for n in READ_ONLY_TOOLS if n in available] + [UPDATE_CONTEXT, PROPOSE_PLAN, JOB_ASK_USER]
+        return [available[n] for n in READ_ONLY_TOOLS if n in available] + [SEARCH_NOTES, UPDATE_CONTEXT, PROPOSE_PLAN,
+                                                                             JOB_ASK_USER]
 
 
 class TaskSession(JobSession):
@@ -137,4 +139,4 @@ class TaskSession(JobSession):
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
         # The plan replaces the chat task list; job ask_user replaces the chat one.
         base = [t for t in registry.available(ctx) if t.name not in ("update_tasks", "ask_user")]
-        return base + [UPDATE_CHECKLIST, UPDATE_CONTEXT, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER]
+        return base + [UPDATE_CHECKLIST, UPDATE_CONTEXT, ADD_NOTE, SEARCH_NOTES, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER]

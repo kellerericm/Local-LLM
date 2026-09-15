@@ -15,6 +15,7 @@ from . import prompts
 class Conversation:
     chat_id: str | None = None
     max_steps: int | None = None        # None = settings.max_steps
+    read_only_nudge: int | None = None  # after this many look-only steps in a row, tell the model to write something
 
     def event_fields(self) -> dict:
         """Fields added to every event this run emits, so the UI can route them."""

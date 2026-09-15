@@ -109,6 +109,7 @@ class Coordinator:
         outcome = "done"
         seen: dict[str, list[tuple[int, int]]] = {}   # read-only output -> (step, message position), since a change
         pos = 0                              # messages added this run: how far back a tool result is
+        looking = 0                          # steps in a row that only read or searched
         try:
             for step in range(max_steps):
                 if cancel.is_set():
@@ -189,6 +190,11 @@ class Coordinator:
                 # (dry run 8 ended a section attempt that way).
                 if oks:
                     failures = 0 if any(oks) else failures + 1
+                looking = looking + 1 if all(c["name"] in READ_ONLY_TOOLS for c in calls) else 0
+                if conv.read_only_nudge and looking and looking % conv.read_only_nudge == 0:
+                    self._add(conv, "user", f"You've spent {looking} steps in a row only reading and searching. "
+                              "Stop gathering: write your best version of the output now with what you have, "
+                              "saying plainly where the evidence is thin or missing, then finish.", kind="coordinator")
                 if cancel.is_set():
                     outcome = "cancelled"
                     break

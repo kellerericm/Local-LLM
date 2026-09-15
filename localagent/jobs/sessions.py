@@ -131,6 +131,8 @@ class PlanSession(JobSession):
 
 
 class TaskSession(JobSession):
+    read_only_nudge = 10                # dry run 8: 25 searches for evidence that didn't exist, nothing written
+
     def __init__(self, runner, job: dict, run: dict, task: dict, max_steps: int):
         super().__init__(runner, job, run)
         self.task = task

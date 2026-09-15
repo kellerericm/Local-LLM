@@ -255,3 +255,17 @@ def test_failures_count_per_message_not_per_call(store, settings, workspace):
         "Found it.",
     ])
     assert coord.run(chat, "look around") == "done"
+
+
+def test_job_style_conversations_are_nudged_after_many_look_only_steps(store, settings, workspace):
+    from localagent.coordinator.conversation import ChatConversation
+    chat = project_chat(store, workspace)
+    settings.max_steps = 20
+    for i in range(12):
+        (workspace / f"f{i}.txt").write_text(f"content {i}")
+    conv = ChatConversation(store, chat)
+    conv.read_only_nudge = 4
+    coord, backend, _ = make(store, settings, [*[call("read_file", path=f"f{i}.txt") for i in range(5)], "Wrote it."])
+    assert coord.run(conv, "gather") == "done"
+    notes = [m for m in store.list_messages(chat) if m.get("kind") == "coordinator" and "only reading" in m["content"]]
+    assert len(notes) == 1

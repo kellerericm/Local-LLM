@@ -58,7 +58,8 @@ Write outline.md once:
 - '## Abstract' (a placeholder line; it's written last)
 - '## Introduction and scope'
 - '## Literature review' with '### <theme>' subsections grouping the papers, bullets citing notes [n12]
-- '## Foundational works': the most-cited papers that were read and why they matter, citing notes
+- '## Foundational works': the most-cited works and why they matter. For works that weren't read (status other
+  than read in the digest's table), say so, and describe them only through notes from the read papers that cite them
 - '## Synthesis: agreements, conflicts, and gaps', citing notes on both sides of each disagreement
 - '## Conclusion and summary'
 Then call check_citations on outline.md once, fix any ids it lists, and call complete_task (the section checks run
@@ -71,7 +72,9 @@ SECTION = """Write the report section "{heading}" to {path}. Start the file with
 
 For an overview of the papers, read literature_digest.md; for detail on a point, call search_notes with a few keywords
 (brief true) instead of opening the full papers/*.md write-ups. If a note the outline cites doesn't support its
-claim, find the right note with a keyword search or leave the claim out; don't get stuck on it. Support every
+claim, find the right note with a keyword search or leave the claim out; don't get stuck on it. Some works (for
+example most-cited works that weren't read) have no notes of their own: describe them through the papers that cite
+them and say they weren't read, rather than searching for evidence that isn't there. Support every
 factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write the file
 once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 

@@ -24,7 +24,7 @@ def list_templates() -> list[dict]:
 
 def _load() -> None:
     # Importing is idempotent; modules register themselves. Importing one template directly must not hide the others.
-    from . import deep_research, generic, research_report  # noqa: F401
+    from . import auto_research, deep_research, generic, research_report  # noqa: F401
 
 
 __all__ = ["HandlerResult", "Template", "get_template", "list_templates", "register"]

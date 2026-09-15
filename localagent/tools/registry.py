@@ -19,6 +19,15 @@ class ToolError(Exception):
         self.denied = denied
 
 
+class ApprovalPending(Exception):
+    """Raised in job sessions when an action needs approval: the task parks instead of blocking the runner."""
+
+    def __init__(self, approval_id: str, summary: str):
+        super().__init__(summary)
+        self.approval_id = approval_id
+        self.summary = summary
+
+
 @dataclass
 class ToolResult:
     content: str

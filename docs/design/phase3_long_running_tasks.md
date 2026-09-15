@@ -120,6 +120,17 @@ A single `JobRunner` thread in the server:
 - **Approvals** from job tasks go through the existing ApprovalBroker and project rules, plus the job's pre-approved permissions. A pending approval blocks only its task.
 - **Progress** is posted to the origin chat at milestones and on completion or failure, and shown in the job view. Unattended jobs never silently spin: after the budget or 3 replans without progress, they stop and explain.
 
+### 3.6 Job scratchpad (approved 2026-09-14)
+One living working document per job. The coordinator puts it at the top of every planning and task prompt, stores it in the database, and mirrors it to `jobs/<slug>/scratchpad.md`.
+
+| Section | Maintained by | Contents |
+|---|---|---|
+| **Context** | The model (`update_context(add, remove)`) and the user (job view) | Key facts, decisions, file locations, constraints, dead ends. Stored as separate items with ids, so updates add or remove items rather than rewrite everything. Capped (~1.5k tokens); over the cap, the next task is asked to consolidate |
+| **Task list** | Coordinator, from the plan | `[x]` done + one-line result · `[>]` current · `[ ]` pending · `[!]` failed/blocked · `[?]` waiting on the user · `[-]` skipped |
+| **Current task checklist** | The model (`update_checklist(items)`), stored on the task | The task's own sub-steps, checked off as it goes. Retries, resumes after Pause/Stop, and restarts all see it, so work continues from the last checked item |
+
+Motivation: resuming from summaries and a list of past tool calls loses the "why" and the "where was I". In the first real-model job run, planning failed because the model assumed files lived in a `tune_me/` subfolder. A context section that records the workspace layout fixes that class of error for every later step.
+
 ## 4. Memory: what persists outside the model
 
 ### 4.1 Where things live

@@ -54,8 +54,24 @@ NUDGE = ("You replied without calling complete_task or fail_task. If the task is
          "complete_task with a summary. If you can't finish it, call fail_task. Otherwise, continue working.")
 
 
-def plan_request(job: dict) -> str:
+def workspace_listing(workspace, limit: int = 40) -> str:
+    """Top level of the workspace, so plans name real paths (the first real-model run guessed a subfolder)."""
+    try:
+        entries = sorted((p for p in workspace.iterdir() if p.name not in ("jobs", "__pycache__", ".git")),
+                         key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError:
+        return ""
+    rows = [f"- {p.name}/" if p.is_dir() else f"- {p.name} ({p.stat().st_size} bytes)" for p in entries[:limit]]
+    if len(entries) > limit:
+        rows.append(f"- … and {len(entries) - limit} more")
+    return "\n".join(rows) or "(empty)"
+
+
+def plan_request(job: dict, listing: str = "") -> str:
     parts = [f"Plan this job.\n\n**Title:** {job['title']}\n**Goal:** {job['goal']}"]
+    if listing:
+        parts.append("**The workspace (your current directory) contains, at the top level:**\n" + listing +
+                     "\nUse paths relative to the workspace, exactly as listed.")
     budget = job["budget"]
     if budget.get("indefinite"):
         parts.append("**Budget:** no limit. Plan for thoroughness, but keep tasks small.")

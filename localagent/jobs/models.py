@@ -114,6 +114,12 @@ class JobStore:
         self.s = store
         with store._lock:
             store._conn.executescript(JOB_SCHEMA)
+            added = {"job_tasks": [("waiting_kind", "TEXT"), ("checklist", "TEXT")]}
+            for table, columns in added.items():
+                existing = {r[1] for r in store._conn.execute(f"PRAGMA table_info({table})")}
+                for name, sql_type in columns:
+                    if name not in existing:
+                        store._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
             store._conn.commit()
 
     # -- jobs ---------------------------------------------------------------
@@ -177,7 +183,7 @@ class JobStore:
     def _task_out(row: dict | None) -> dict | None:
         if row is None:
             return None
-        for k in ("checks", "depends_on", "guidance"):
+        for k in ("checks", "depends_on", "guidance", "checklist"):
             row[k] = json.loads(row[k]) if row.get(k) else []
         return row
 
@@ -204,9 +210,9 @@ class JobStore:
         return self._task_out(self.s._one("SELECT * FROM job_tasks WHERE id=?", (task_id,)))
 
     def update_task(self, task_id: str, **fields) -> dict | None:
-        json_fields = {"checks", "depends_on", "guidance"}
+        json_fields = {"checks", "depends_on", "guidance", "checklist"}
         allowed = json_fields | {"title", "instructions", "done_when", "status", "attempts", "max_attempts",
-                                 "result_summary", "question"}
+                                 "result_summary", "question", "waiting_kind"}
         sets, params = [], []
         for k, v in fields.items():
             if k in allowed:

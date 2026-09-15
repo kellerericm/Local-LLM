@@ -361,6 +361,80 @@ def test_job_permissions_preapprove_keys(env_factory):
     assert env.approver.requests == []            # network was pre-approved for this job
 
 
+def test_approval_parks_task_without_blocking_others(env_factory, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret-ish")
+    plan = [
+        {"id": "t1", "title": "Read outside file", "instructions": "Copy outside.txt into copy.txt",
+         "done_when": "copy.txt exists in the workspace", "checks": [{"type": "file_exists", "path": "copy.txt"}]},
+        {"id": "t2", "title": "Independent", "instructions": "Write other.txt",
+         "done_when": "other.txt exists in the workspace", "checks": [{"type": "file_exists", "path": "other.txt"}]},
+    ]
+    approver = AutoApprover(allow=False)
+    env = env_factory([
+        call("read_file", path=str(outside)),                                        # t1 -> needs approval, parks
+        call("write_file", path="other.txt", content="ok"), call("complete_task", summary="Wrote other.txt."),  # t2 runs
+        call("read_file", path=str(outside)),                                        # t1 again: granted once
+        call("write_file", path="copy.txt", content="secret-ish"), call("complete_task", summary="Copied the file."),
+    ], approver=approver)
+    job = env.job()
+    env.plan(job["id"], plan=plan)
+    env.runner._tick()
+    t1 = env.task(job["id"], "t1")
+    assert t1["status"] == "waiting_user" and t1["waiting_kind"] == "approval"
+    assert approver.requests and approver.requests[0]["job_id"] == job["id"]
+    env.runner._tick()
+    assert env.task(job["id"], "t2")["status"] == "done"          # not blocked by t1's approval
+    env.runner._tick()                                             # settle
+    assert env.jobs.get_job(job["id"])["status_reason"] == "Waiting for your approval"
+    with pytest.raises(ValueError):
+        env.runner.answer(job["id"], "yes", t1["id"])              # approvals aren't answered as questions
+    approver.decide(next(iter(approver.callbacks)), "once")
+    t1 = env.task(job["id"], "t1")
+    assert t1["status"] == "pending" and "approved" in t1["guidance"][-1]
+    assert env.jobs.get_job(job["id"])["status"] == "running"
+    env.runner._tick()
+    assert env.task(job["id"], "t1")["status"] == "done"
+    assert env.jobs.get_job(job["id"])["inputs"]["granted_once"] == []   # the one-time grant was used up
+    assert len(approver.requests) == 1                                   # the retry didn't ask again
+
+
+def test_denied_approval_tells_task_not_to_retry(env_factory, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    approver = AutoApprover(allow=False)
+    env = env_factory([call("read_file", path=str(outside))], approver=approver)
+    job = env.job()
+    env.plan(job["id"], plan=GOOD_PLAN[:1])
+    env.runner._tick()
+    approver.decide(next(iter(approver.callbacks)), "deny")
+    t1 = env.task(job["id"], "t1")
+    assert t1["status"] == "pending" and "denied" in t1["guidance"][-1] and "Don't try it again" in t1["guidance"][-1]
+
+
+def test_recover_releases_tasks_parked_on_lost_approvals(env_factory):
+    env = env_factory([])
+    job = env.job()
+    env.plan(job["id"], plan=GOOD_PLAN[:1])
+    t1 = env.task(job["id"], "t1")
+    env.jobs.update_task(t1["id"], status="waiting_user", waiting_kind="approval", question="Approval needed: x")
+    env.jobs.update_job(job["id"], status="waiting_user")
+    JobRunner(env.jobs, env.store, env.coord, lambda: env.settings, env.events.append, env.approver).recover()
+    t1 = env.task(job["id"], "t1")
+    assert t1["status"] == "pending" and "lost when the app restarted" in t1["guidance"][-1]
+    assert env.jobs.get_job(job["id"])["status"] == "running"
+
+
+def test_plan_request_lists_workspace(env_factory, workspace):
+    (workspace / "data.csv").write_text("x,y\n")
+    (workspace / "src").mkdir()
+    env = env_factory([call("propose_plan", tasks=GOOD_PLAN)])
+    env.job()
+    env.runner._tick()
+    first_user = next(m for m in env.backend.calls[0]["messages"] if m["role"] == "user")["content"]
+    assert "- src/" in first_user and "- data.csv" in first_user and "jobs/" not in first_user
+
+
 # ---------------------------------------------------------------- API
 def test_job_api(settings, workspace):
     with TestClient(create_app(settings, EchoBackend(), run_jobs=False)) as client:

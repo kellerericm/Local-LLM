@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..resources import in_hours
 from ..safety.paths import PathGuard
+from ..tools.registry import ApprovalPending
 from . import prompts
 from .checks import run_checks
 from .mirrors import write_mirrors
@@ -67,7 +68,25 @@ class JobRunner:
         self._wake.set()
 
     def recover(self) -> None:
-        """Runs left 'running' by a crash or shutdown become interrupted; their tasks go back to pending."""
+        """Runs left 'running' by a crash or shutdown become interrupted; their tasks go back to pending.
+        Approval requests don't survive a restart, so tasks parked on one go back to pending too."""
+        for job in self.jobs.list_jobs():
+            changed = False
+            for task in self.jobs.list_tasks(job["id"]):
+                if task["status"] == T_WAITING and task.get("waiting_kind") == "approval":
+                    self.jobs.update_task(task["id"], status=T_PENDING, question=None, waiting_kind=None)
+                    self.jobs.add_guidance(task["id"], "An approval request was lost when the app restarted. If you "
+                                                       "still need that action, it will be asked again.")
+                    changed = True
+            inputs = job.get("inputs") or {}
+            if inputs.get("pending_approval"):
+                inputs.pop("pending_approval")
+                self.jobs.update_job(job["id"], inputs=inputs, status=PLANNING, status_reason=None)
+                changed = True
+            elif changed and job["status"] == WAITING_USER:
+                self.jobs.update_job(job["id"], status=RUNNING, status_reason=None)
+            if changed:
+                self._changed(job["id"])
         for run in self.jobs.interrupted_runs():
             msgs = self.jobs.list_run_messages(run["id"])
             steps = sum(1 for m in msgs if m["role"] == "assistant")
@@ -147,8 +166,10 @@ class JobRunner:
             task = self.jobs.get_task(task_id)
             if not task or task["status"] != T_WAITING:
                 raise ValueError("That task isn't waiting for an answer.")
+            if task.get("waiting_kind") == "approval":
+                raise ValueError("That task is waiting for an approval; decide in the approval dialog.")
             self.jobs.add_guidance(task_id, f"You asked the user: \"{task['question']}\" They answered: \"{text}\"")
-            self.jobs.update_task(task_id, status=T_PENDING, question=None)
+            self.jobs.update_task(task_id, status=T_PENDING, question=None, waiting_kind=None)
             self.jobs.journal(job_id, "answer", f"User answered: {text}", task["key"])
             if job["status"] == WAITING_USER:
                 self.jobs.update_job(job_id, status=RUNNING, status_reason=None)
@@ -162,6 +183,36 @@ class JobRunner:
             self.jobs.update_job(job_id, inputs=inputs, status=PLANNING, status_reason=None)
             self.jobs.journal(job_id, "answer", f"User answered the planning question: {text}")
         return self._changed(job_id, wake=True)
+
+    def on_approval(self, job_id: str, task_id: str | None, keys: list[str], summary: str, decision: str) -> None:
+        """Called when the user decides on a job's approval request (from the API thread)."""
+        job = self.jobs.get_job(job_id)
+        if not job or job["status"] in TERMINAL_JOB_STATUSES:
+            return
+        inputs = job["inputs"] or {}
+        allowed = decision in ("once", "always")
+        if allowed and decision == "once":
+            inputs["granted_once"] = list(inputs.get("granted_once") or []) + list(keys)
+        note = (f"The user approved: {summary}. You may do it now." if allowed else
+                f"The user denied: {summary}. Don't try it again; find another way, or call fail_task and explain.")
+        if task_id:
+            task = self.jobs.get_task(task_id)
+            if task and task["status"] == T_WAITING and task.get("waiting_kind") == "approval":
+                self.jobs.add_guidance(task_id, note)
+                self.jobs.update_task(task_id, status=T_PENDING, question=None, waiting_kind=None)
+            status = RUNNING if job["status"] == WAITING_USER else job["status"]
+            self.jobs.update_job(job_id, inputs=inputs, status=status,
+                                 status_reason=None if status == RUNNING else job.get("status_reason"))
+            self.jobs.journal(job_id, "approval", f"{'Approved' if allowed else 'Denied'}: {summary}",
+                              task["key"] if task else None)
+        else:
+            inputs.pop("pending_approval", None)
+            inputs.setdefault("answers", []).append({"question": f"May the planner {summary}?",
+                                                     "answer": "Yes" if allowed else "No, don't do that."})
+            status = PLANNING if job["status"] == WAITING_USER else job["status"]
+            self.jobs.update_job(job_id, inputs=inputs, status=status, status_reason=None)
+            self.jobs.journal(job_id, "approval", f"{'Approved' if allowed else 'Denied'} for planning: {summary}")
+        self._changed(job_id, wake=True)
 
     def retry_task(self, job_id: str, task_id: str) -> dict:
         task = self._require_task(job_id, task_id, {T_FAILED, T_SKIPPED, T_DONE})
@@ -270,8 +321,12 @@ class JobRunner:
             self.jobs.journal(job["id"], "blocked", f"Paused: {names} failed after all attempts.")
             self._changed(job["id"])
         elif any(t["status"] == T_WAITING for t in leaf):
-            if job["status"] != WAITING_USER:
-                self.jobs.update_job(job["id"], status=WAITING_USER, status_reason="Waiting for your answer")
+            waiting = [t for t in leaf if t["status"] == T_WAITING]
+            kinds = {t.get("waiting_kind") or "question" for t in waiting}
+            reason = ("Waiting for your approval" if kinds == {"approval"} else
+                      "Waiting for your answer" if kinds == {"question"} else "Waiting for your answers and approvals")
+            if job["status"] != WAITING_USER or job.get("status_reason") != reason:
+                self.jobs.update_job(job["id"], status=WAITING_USER, status_reason=reason)
                 self._changed(job["id"])
 
     def _unblock(self, job_id: str) -> None:
@@ -348,7 +403,9 @@ class JobRunner:
         run = self.jobs.create_run(job["id"], "plan", attempt=attempt)
         self.jobs.journal(job["id"], "plan", f"Planning (attempt {attempt}).")
         session = PlanSession(self, job, run)
-        outcome = self._execute(session, prompts.plan_request(job))
+        project = self.store.get_project(job["project_id"])
+        listing = prompts.workspace_listing(Path(project["workspace_path"])) if project else ""
+        outcome = self._execute(session, prompts.plan_request(job, listing))
         res = session.result
         if res and res["kind"] == "plan":
             tasks = self.jobs.replace_plan(job["id"], res["tasks"])
@@ -363,6 +420,13 @@ class JobRunner:
             self.jobs.update_job(job["id"], inputs=inputs, status=WAITING_USER, status_reason="Question about the goal")
             self.jobs.finish_run(run["id"], "done", "ask", res["question"], session.steps)
             self.jobs.journal(job["id"], "question", f"Asked: {res['question']}")
+        elif res and res["kind"] == "approval":
+            inputs = self.jobs.get_job(job["id"])["inputs"]
+            inputs["pending_approval"] = res["summary"]
+            self.jobs.update_job(job["id"], inputs=inputs, status=WAITING_USER,
+                                 status_reason=f"Waiting for your approval: {res['summary']}")
+            self.jobs.finish_run(run["id"], "done", "waiting_approval", res["summary"], session.steps)
+            self.jobs.journal(job["id"], "approval", f"Planning needs approval: {res['summary']}")
         elif outcome in ("interrupted", "cancelled"):
             self.jobs.finish_run(run["id"], "interrupted", "interrupted", session.interrupt_reason, session.steps)
             self._after_interrupt(job["id"], session.interrupt_reason)
@@ -386,7 +450,15 @@ class JobRunner:
         task = self.jobs.get_task(task["id"])
 
         if res and res["kind"] == "complete":
-            results = self._check(job, task)
+            try:
+                results = self._check(job, task)
+            except ApprovalPending as e:
+                res = {"kind": "approval", "approval_id": e.approval_id, "summary": f"{e.summary} (a task check)"}
+                self.jobs.add_guidance(task["id"], f"You called complete_task with this summary: {session.result['summary']} "
+                                                   "Its checks need approval to run; once approved, verify and call "
+                                                   "complete_task again.")
+                results = None
+        if res and res["kind"] == "complete":
             failed = [r for r in results if not r.ok]
             if not failed:
                 self.jobs.update_task(task["id"], status=T_DONE, result_summary=res["summary"][:1200])
@@ -402,9 +474,15 @@ class JobRunner:
             self._attempt_failed(job, task, run, session, "gave_up",
                                  f"A previous attempt gave up: {res['reason']}.{help_}")
         elif res and res["kind"] == "ask":
-            self.jobs.update_task(task["id"], status=T_WAITING, question=res["question"])
+            self.jobs.update_task(task["id"], status=T_WAITING, question=res["question"], waiting_kind="question")
             self.jobs.finish_run(run["id"], "done", "ask", res["question"], session.steps)
             self.jobs.journal(job["id"], "question", f"Asked the user: {res['question']}", task["key"])
+        elif res and res["kind"] == "approval":
+            self.jobs.update_task(task["id"], status=T_WAITING, question=f"Approval needed: {res['summary']}",
+                                  waiting_kind="approval")
+            self.jobs.add_guidance(task["id"], interruption_note(self.jobs.list_run_messages(run["id"])))
+            self.jobs.finish_run(run["id"], "done", "waiting_approval", res["summary"], session.steps)
+            self.jobs.journal(job["id"], "approval", f"Waiting for approval: {res['summary']}", task["key"])
         elif outcome in ("interrupted", "cancelled"):
             self.jobs.update_task(task["id"], status=T_PENDING)
             self.jobs.add_guidance(task["id"], interruption_note(self.jobs.list_run_messages(run["id"])))
@@ -427,7 +505,7 @@ class JobRunner:
         workspace = Path(project["workspace_path"])
         env_path = Path(project["env_path"] or settings.env_path)
         guard = PathGuard(workspace, env_path)
-        approver = JobApprover(self.approvals, job)
+        approver = JobApprover(self.approvals, self, job, task["id"])
         ask = lambda keys, summary, detail: approver.request(None, project["id"], keys, summary, detail)  # noqa: E731
         return run_checks(task["checks"], workspace, env_path, guard, self.coordinator.policy, ask)
 

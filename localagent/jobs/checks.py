@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..safety.paths import is_within
+from ..tools.registry import ApprovalPending
 from ..tools.process import env_for, format_result, run_process
 from ..tools.shell import PS_PREFIX
 
@@ -49,6 +50,8 @@ def run_checks(checks: list[dict], workspace: Path, env_path: Path, guard, polic
     for c in checks:
         try:
             results.append(_run_one(c, workspace, env_path, guard, policy, ask, cancel))
+        except ApprovalPending:
+            raise                   # the task parks until the user decides
         except Exception as e:  # a broken check is a failed check, never a crash
             results.append(CheckResult(c, False, f"check error: {type(e).__name__}: {e}"))
     return results

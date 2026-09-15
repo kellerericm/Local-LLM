@@ -186,10 +186,23 @@ function jobMenu(anchor, job) {
 function questionsPanel(job, tasks) {
   const questions = [];
   if (job.inputs && job.inputs.pending_question) questions.push({ text: job.inputs.pending_question, taskId: null, label: "About the goal" });
-  for (const t of tasks) if (t.status === "waiting_user" && t.question) questions.push({ text: t.question, taskId: t.id, label: `[${t.key}] ${t.title}` });
+  if (job.inputs && job.inputs.pending_approval) questions.push({ text: `Approval needed: ${job.inputs.pending_approval}`, approval: true, label: "Planning" });
+  for (const t of tasks) {
+    if (t.status === "waiting_user" && t.question) {
+      questions.push({ text: t.question, taskId: t.id, label: `[${t.key}] ${t.title}`, approval: t.waiting_kind === "approval" });
+    }
+  }
   if (!questions.length) return null;
-  return h("section", { class: "job-questions" }, h("div", { class: "section-label" }, "Questions for you"),
+  return h("section", { class: "job-questions" }, h("div", { class: "section-label" }, "Waiting on you"),
     questions.map((q) => {
+      if (q.approval) {
+        return h("div", { class: "ask" },
+          h("strong", {}, q.label), h("div", {}, q.text),
+          h("div", { class: "hint" }, "Only this task waits. The rest of the job keeps running."),
+          h("div", { class: "modal-actions" }, h("button", { class: "btn primary small", onclick: () => {
+            if (S.approvals.size) showNextApproval(); else refreshState().then(showNextApproval);
+          } }, "Open approval")));
+      }
       const input = h("textarea", { rows: 2, placeholder: "Your answer…" });
       return h("div", { class: "ask" },
         h("strong", {}, q.label), h("div", {}, q.text), input,

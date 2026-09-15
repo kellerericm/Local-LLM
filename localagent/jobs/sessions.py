@@ -5,7 +5,7 @@ import threading
 
 from ..coordinator import prompts as base_prompts
 from ..coordinator.conversation import Conversation
-from ..tools.registry import Tool, ToolRegistry
+from ..tools.registry import ApprovalPending, Tool, ToolRegistry
 from . import prompts
 from .checks import describe
 from .tools import COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PLAN
@@ -14,17 +14,38 @@ READ_ONLY_TOOLS = ("read_file", "list_dir", "glob", "grep")
 
 
 class JobApprover:
-    """Approvals for unattended jobs: keys the user pre-approved at launch pass; others go to the user."""
+    """Approvals for unattended jobs.
 
-    def __init__(self, broker, job: dict):
+    Keys pre-approved at launch pass, as do keys the user allowed once after an earlier request (consumed on use).
+    Anything else becomes a non-blocking request: ApprovalPending parks the task and the runner moves on.
+    """
+
+    def __init__(self, broker, runner, job: dict, task_id: str | None):
         self.broker = broker
+        self.runner = runner
         self.job = job
+        self.task_id = task_id
 
     def request(self, chat_id, scope, keys, summary, detail, cancel=None, **kw) -> bool:
-        if keys and all(k in (self.job.get("permissions") or []) for k in keys):
+        jobs = self.runner.jobs
+        job = jobs.get_job(self.job["id"]) or self.job
+        permissions = set(job.get("permissions") or [])
+        inputs = job.get("inputs") or {}
+        granted = list(inputs.get("granted_once") or [])
+        if keys and all(k in permissions or k in granted for k in keys):
+            used = [k for k in keys if k not in permissions]
+            if used:
+                for k in used:
+                    granted.remove(k)
+                jobs.update_job(job["id"], inputs={**inputs, "granted_once": granted})
             return True
-        return self.broker.request(chat_id, scope, keys, f"{summary} (job: {self.job['title']})", detail, cancel,
-                                   job_id=self.job["id"])
+        label = f"{summary} (job: {job['title']})"
+        approval_id = self.broker.request_async(
+            chat_id, scope, keys, label, detail, job_id=job["id"],
+            on_decision=lambda decision: self.runner.on_approval(job["id"], self.task_id, keys, summary, decision))
+        if approval_id is None:
+            return True
+        raise ApprovalPending(approval_id, summary)
 
     def pending(self):
         return self.broker.pending()
@@ -60,7 +81,7 @@ class JobSession(Conversation):
         return self.job.get("gen_overrides") or {}
 
     def approvals(self, default):
-        return JobApprover(default, self.job)
+        return JobApprover(default, self.runner, self.job, getattr(self, "task", {}).get("id"))
 
     def before_step(self, cancel: threading.Event) -> str | None:
         reason = self.runner.break_point(self, cancel)

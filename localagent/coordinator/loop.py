@@ -19,7 +19,8 @@ from ..backend.model_profiles import effective_generation
 from ..backend.toolcall_parsers import FORMAT_REMINDER, get_parser
 from ..safety.commands import CommandPolicy
 from ..safety.paths import PathGuard
-from ..tools.registry import Tool, ToolContext, ToolError, ToolRegistry, ToolResult, validate_args
+from ..tools.registry import (ApprovalPending, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
+                              validate_args)
 from . import prompts
 from .context import fit_messages
 from .conversation import ChatConversation, Conversation
@@ -240,6 +241,10 @@ class Coordinator:
                 box.append(r if isinstance(r, ToolResult) else ToolResult(str(r)))
             except ToolError as e:
                 box.append(ToolResult(str(e), ok=False, denied=e.denied))
+            except ApprovalPending as e:
+                ctx.conversation.result = {"kind": "approval", "approval_id": e.approval_id, "summary": e.summary}
+                box.append(ToolResult(f"This needs the user's approval ({e.summary}). The task will pause here and "
+                                      "continue after they decide.", end_turn=True))
             except TypeError as e:
                 box.append(ToolResult(f"Bad arguments for {tool.name}: {e}", ok=False))
             except Exception as e:

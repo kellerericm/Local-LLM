@@ -121,6 +121,7 @@ def test_check_citations_and_note_listing_by_id(env_factory, workspace):
         call("check_citations", path="out.md"),
         call("search_notes", brief=True, limit=50),
         call("search_notes", brief=True, limit=50, offset=50),
+        call("search_notes", query="[n3], n7 n999"),
         call("fail_task", reason="test done"),
     ])
     job = env.job()
@@ -134,3 +135,5 @@ def test_check_citations_and_note_listing_by_id(env_factory, workspace):
     assert "2 of 3 citations in out.md are valid" in results[R] and "[n9999]" in results[R]
     assert results[R + 1].startswith("Notes 1-50 of 55 (by id; use offset=50 for more)") and "[n1]" in results[R + 1]
     assert results[R + 2].startswith("Notes 51-55 of 55 (by id)") and "[n55]" in results[R + 2]
+    assert results[R + 3].startswith("Notes by id (not found: n999):") and "[n3]" in results[R + 3] and "[n7]" in results[R + 3]
+    assert "[n1]" not in results[R + 3]

@@ -126,9 +126,21 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
 
 def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10, brief: bool = False,
                  offset: int = 0) -> ToolResult:
+    import re as _re
+
     conv = ctx.conversation
     header = ""
-    if query.strip():
+    ids = [int(x) for x in _re.findall(r"\[?\bn(\d+)\b\]?", query)]
+    if ids and not _re.sub(r"\[?\bn\d+\b\]?|[\s,;]+", "", query):
+        # A query of note ids ("n43 n48" or "[n43], [n48]"): look them up directly (dry run 8: the model couldn't
+        # fetch notes an outline cited, because keyword search doesn't match ids).
+        found = [n for n in (conv.jobs.get_note(conv.job["id"], i) for i in dict.fromkeys(ids)) if n]
+        missing = [f"n{i}" for i in dict.fromkeys(ids) if not conv.jobs.get_note(conv.job["id"], i)]
+        header = f"Notes by id{' (not found: ' + ', '.join(missing) + ')' if missing else ''}:\n"
+        notes = found
+        if not notes:
+            return ToolResult(f"No notes with those ids ({', '.join(missing)}).")
+    elif query.strip():
         notes = conv.jobs.search_notes(conv.job["id"], query, source or None, limit)
     else:
         # No keywords: list in id order and say how many there are, so a page isn't mistaken for all notes
@@ -288,8 +300,9 @@ ADD_NOTE = Tool(
 SEARCH_NOTES = Tool(
     "search_notes",
     "Search this job's saved notes by keywords, optionally for one source. Returns note ids, claims, and quotes "
-    "(brief: ids, locations, and claims only, for an overview of many notes). Without keywords, lists notes by id "
-    "with the total count; page with offset. To check the citations in a file, use check_citations instead.",
+    "(brief: ids, locations, and claims only, for an overview of many notes). A query of note ids like 'n43 n48' "
+    "returns those notes. Without a query, lists notes by id with the total count; page with offset. To check the "
+    "citations in a file, use check_citations instead.",
     {"type": "object", "properties": {
         "query": {"type": "string"}, "source": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "brief": {"type": "boolean"},

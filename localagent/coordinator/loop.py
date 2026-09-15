@@ -161,6 +161,7 @@ class Coordinator:
 
                 by_name = {t.name: t for t in tools}
                 end_turn = False
+                oks: list[bool] = []
                 for i, call in enumerate(calls):
                     if cancel.is_set():
                         for c in calls[i:]:
@@ -173,7 +174,7 @@ class Coordinator:
                         result = repeat_guard(seen, call["name"], result, step, pos)
                     elif call["name"] not in READ_ONLY_TOOLS and result.ok:
                         seen.clear()                 # something may have changed: earlier reads are stale
-                    failures = 0 if result.ok else failures + 1
+                    oks.append(result.ok)
                     self._add(conv, "tool", result.content, tool_call_id=call["id"], name=call["name"],
                               ok=result.ok)
                     end_turn = end_turn or result.end_turn
@@ -184,6 +185,10 @@ class Coordinator:
                             self._add(conv, "tool", f"Not run: an earlier tool call in this message {why}. "
                                       "Re-plan based on that result.", tool_call_id=c["id"], name=c["name"], ok=False)
                         break
+                # Count failing messages, not calls: three bad calls batched in one message are one mistake
+                # (dry run 8 ended a section attempt that way).
+                if oks:
+                    failures = 0 if any(oks) else failures + 1
                 if cancel.is_set():
                     outcome = "cancelled"
                     break

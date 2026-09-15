@@ -244,3 +244,14 @@ def test_rereading_a_long_output_after_it_was_shortened_is_allowed(store, settin
     big = [m for m in tools if "line 0 of the outline" in m["content"] or "Not shown" in m["content"]]
     assert big[1]["ok"] and not big[1]["content"].startswith("(This is exactly")
     assert big[2]["content"].startswith("(This is exactly the same output")
+
+
+def test_failures_count_per_message_not_per_call(store, settings, workspace):
+    chat = project_chat(store, workspace)
+    settings.max_consecutive_failures = 3
+    coord, backend, _ = make(store, settings, [
+        call("read_file", path="missing1.txt") + call("read_file", path="missing2.txt") + call("read_file", path="missing3.txt"),
+        call("list_dir"),
+        "Found it.",
+    ])
+    assert coord.run(chat, "look around") == "done"

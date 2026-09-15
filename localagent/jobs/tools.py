@@ -305,7 +305,7 @@ SEARCH_NOTES = Tool(
     "citations in a file, use check_citations instead.",
     {"type": "object", "properties": {
         "query": {"type": "string"}, "source": {"type": "string"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "brief": {"type": "boolean"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "brief": {"type": "boolean"},
         "offset": {"type": "integer", "minimum": 0}}},
     search_notes, "job")
 

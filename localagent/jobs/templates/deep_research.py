@@ -70,7 +70,8 @@ SECTION = """Write the report section "{heading}" to {path}. Start the file with
 {part}
 
 For an overview of the papers, read literature_digest.md; for detail on a point, call search_notes with a few keywords
-(brief true) instead of opening the full papers/*.md write-ups. Support every
+(brief true) instead of opening the full papers/*.md write-ups. If a note the outline cites doesn't support its
+claim, find the right note with a keyword search or leave the claim out; don't get stuck on it. Support every
 factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write the file
 once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 

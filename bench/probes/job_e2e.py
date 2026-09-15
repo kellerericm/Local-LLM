@@ -100,10 +100,13 @@ def main():
     ap.add_argument("--budget-hours", type=float, default=1.5)
     ap.add_argument("--indefinite", action="store_true")
     ap.add_argument("--no-kill", action="store_true")
+    ap.add_argument("--template", default="generic", help="job type: generic, research_report, deep_research")
+    ap.add_argument("--inputs", default="{}", help="JSON template inputs")
+    ap.add_argument("--answer", default="Use your best judgment within the stated rules; no further input is available.")
     args = ap.parse_args()
     wl = WORKLOADS[args.workload]
 
-    run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}"
+    run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}_{args.template}"
     ws = run_dir / wl["folder"]
     shutil.copytree(ROOT / "sandbox" / wl["folder"], ws)
     global CODE_ROOT
@@ -126,6 +129,7 @@ def main():
     c.put("/api/settings", json={"thinking_budget": 2000, "resources": {"idle_unload_minutes": 0}})
     project = c.post("/api/projects", json={"name": wl["folder"], "workspace_path": str(ws)}).json()
     job = c.post("/api/jobs", json={"project_id": project["id"], "title": wl["title"], "goal": wl["goal"],
+                                    "template": args.template, "inputs": json.loads(args.inputs),
                                     "budget": {"max_hours": args.budget_hours, "max_steps": 1000,
                                                "indefinite": args.indefinite}}).json()
     job_id = job["id"]
@@ -153,11 +157,16 @@ def main():
             c.post(f"/api/jobs/{job_id}/approve")
             note("plan approved", n_tasks=len(tasks))
         elif status == "waiting_user":
-            q = d["job"]["inputs"].get("pending_question") or next((t["question"] for t in tasks if t.get("question")), "")
-            answer = "Use your best judgment within the README rules; no further input is available."
-            task = next((t for t in tasks if t["status"] == "waiting_user"), None)
-            c.post(f"/api/jobs/{job_id}/answer", json={"text": answer, "task_id": task["id"] if task else None})
-            note("answered question", question=q)
+            for task in [t for t in tasks if t["status"] == "waiting_user" and t.get("waiting_kind") != "approval"]:
+                if task.get("waiting_kind") == "gate":
+                    c.post(f"/api/jobs/{job_id}/answer", json={"text": "approve", "task_id": task["id"]})
+                    note("approved gate", task=task["key"], prompt=task.get("question"))
+                else:
+                    c.post(f"/api/jobs/{job_id}/answer", json={"text": args.answer, "task_id": task["id"]})
+                    note("answered question", task=task["key"], question=task.get("question"))
+            if d["job"]["inputs"].get("pending_question"):
+                c.post(f"/api/jobs/{job_id}/answer", json={"text": args.answer})
+                note("answered planning question", question=d["job"]["inputs"]["pending_question"])
         elif status in ("done", "failed", "cancelled") or (status == "paused" and killed):
             break
         # Play the user for approval pop-ups too: allow once, and record what was asked.

@@ -18,6 +18,12 @@ Qwen3.5-9B ships as bf16 (~18 GB) and is quantized to 4-bit on every load. That 
 - Is output identical? Spot-check against the bf16 load and rerun the benchmark.
 - Where does the copy go, and how does the (future) model manager treat it: as a variant of the original model, or as its own entry?
 
+## Long-context steps are extremely slow (priority)
+In the Lake Veyra job run, a task whose prompt held a whole report plus sources took 64 minutes for 7 steps; one generation took over 15 minutes. Short-context steps take 20–40 s. Research jobs routinely have long contexts, so this blocks practical deep research.
+- **Measure:** time to first token and tokens/s vs prompt length (2k, 8k, 16k, 32k) for Qwen3.5-9B 4-bit, with the model's GPU/CPU placement logged.
+- **Suspects:** (a) the reference PyTorch implementation of the gated-delta-rule layers (below); (b) KV cache growth pushing the model partly onto CPU under the 14 GB VRAM cap; (c) the reasoning budget not bounding total output.
+- **Options:** optimized kernels; a llama.cpp backend; a smaller context window per task (fit_messages budget), with long material read in pieces; a lower VRAM cap for weights with more room for KV; GPU-only offload mode so spillover fails loudly instead of silently slowing down.
+
 ## Optimized kernels for Qwen3.5's linear-attention layers
 While running Qwen3.5-9B, transformers warns that `chunk_gated_delta_rule` / `fused_recurrent_gated_delta_rule` (needs `flash-linear-attention`) and `causal_conv1d_fn` / `causal_conv1d_update` (needs `causal_conv1d`) fall back to "much slower" reference PyTorch code. Both packages depend on Triton and CUDA builds, which are awkward on Windows.
 - Is there a working path on Windows + Python 3.14? For example `triton-windows` plus `flash-linear-attention`, prebuilt wheels, or WSL.

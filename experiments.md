@@ -9,6 +9,25 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-14 — Phase 3a end-to-end: generic job on sandbox/lake_veyra (Qwen3.5-9B)
+- **Question:** Does a generic job suited to plan-following (document report) complete with the real model and survive a mid-task kill?
+- **Setup:**
+  - Command: `python -m bench.probes.job_e2e --workload lake_veyra --minutes 120 --budget-hours 2`, with the server run from a code snapshot.
+  - Raw results: `D:\LocalAgent\bench-runs\20260914-220032_job_e2e_lake_veyra\`.
+- **Status:** done. **Passed.**
+- **Results:**
+  - 5-task plan; the server was killed during t2 and restarted. The job finished with status `done` (5/5), 30 model steps, 1 interrupted run.
+  - report.md scored against the answer key:
+    - **fact recall 10/11** (missed only the 2022 dry-year caveat)
+    - **both conflicting estimates** presented (55% vs 30%), with the methodological reason explained
+    - irrelevant trail notice not cited; 7 relevant sources cited by file name
+- **Problem: speed on long context.**
+  - t1–t4 took ~9 minutes combined (about 20–40 s per step).
+  - **t5 (review the whole report) took 64 minutes for 7 steps**; one generation ran over 15 minutes. Its context held the full report plus re-read sources.
+  - VRAM read 14.2 GB against a 14.5 GB cap during that step.
+  - Leading suspects: the reference (non-kernel) implementation of Qwen3.5's gated-delta-rule attention, which scales badly with prompt length, and/or KV growth pushing layers to CPU.
+  - Tracked in open_questions.md. This must be fixed before long research jobs are practical.
+
 ## 2026-09-14 — Phase 3a end-to-end: generic job on sandbox/tune_me (Qwen3.5-9B)
 - **Question:** Does a generic job run to completion with the real model, survive a server kill mid-task, and produce a good result?
 - **Setup:**

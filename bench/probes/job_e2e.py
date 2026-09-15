@@ -33,10 +33,13 @@ def log(msg: str) -> None:
     print(f"[{dt.datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
+CODE_ROOT = ROOT          # replaced by a snapshot copy in main(), so edits during a long run can't leak in
+
+
 def start_server(port: int, data_dir: Path, logfile: Path) -> subprocess.Popen:
     out = open(logfile, "ab")
     proc = subprocess.Popen([PY, "-m", "localagent", "--no-browser", "--port", str(port), "--data-dir", str(data_dir)],
-                            cwd=ROOT, stdout=out, stderr=subprocess.STDOUT)
+                            cwd=CODE_ROOT, stdout=out, stderr=subprocess.STDOUT)
     for _ in range(120):
         try:
             httpx.get(f"http://127.0.0.1:{port}/api/status", timeout=2)
@@ -103,6 +106,9 @@ def main():
     run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}"
     ws = run_dir / wl["folder"]
     shutil.copytree(ROOT / "sandbox" / wl["folder"], ws)
+    global CODE_ROOT
+    CODE_ROOT = run_dir / "code"
+    shutil.copytree(ROOT / "localagent", CODE_ROOT / "localagent", ignore=shutil.ignore_patterns("__pycache__"))
     protected = {p: (ws / p).read_bytes() for p in wl["protected"]}
     data_dir = run_dir / "data"
     server_log = run_dir / "server.log"

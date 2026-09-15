@@ -312,6 +312,11 @@ Extend `bench/` with long-horizon checks built on `sandbox/`:
   - best score reached vs. baseline 3.01 and floor 0.29
   - **hidden holdout and extrapolation scores** (`answer_keys/tune_me_holdout.py`): the true function scores ~0.31 on both
   - rounds to reach below 1.0; no forbidden edits; revert correctness; experiment log completeness
+- **auto_research on `sandbox/lm_speedrun`** (chosen 2026-09-14 as the real benchmark for 3c):
+  - improve a small byte-level GPT's `train.py` under a fixed 5-minute training budget and a ~3 GB VRAM cap
+  - score is bits-per-byte on hidden Shakespeare text, via `answer_keys/lm_speedrun_eval.py`
+  - 80/20 train/test by default; `--split 80/10/10` adds a validation set for keep/revert on long runs
+  - metrics: best test bpb vs baseline, number of experiments, keep/revert correctness, budget and memory-cap violations
 - **Resume test:** kill the server mid-job, restart, and confirm the job completes with no duplicated notes or lost progress.
 - **Preemption test:** chat latency while a job runs.
 

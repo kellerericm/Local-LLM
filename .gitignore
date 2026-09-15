@@ -13,3 +13,6 @@ data/
 models/
 bench-runs/
 *.sqlite3
+
+# Trained checkpoints from sandbox experiments
+*.pt

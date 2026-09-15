@@ -520,6 +520,24 @@ def test_checklist_survives_interruption_and_is_shown_on_resume(env_factory):
     assert env.task(job["id"], "t1")["status"] == "done"
 
 
+def test_templates_and_notes_api(settings, workspace):
+    (workspace / "doc.md").write_text("Some evidence about lakes.")
+    with TestClient(create_app(settings, EchoBackend(), run_jobs=False)) as client:
+        names = {t["name"] for t in client.get("/api/job_templates").json()}
+        assert {"generic", "research_report"} <= names
+        project = client.post("/api/projects", json={"name": "P", "workspace_path": str(workspace)}).json()
+        assert client.post("/api/jobs", json={"project_id": project["id"], "title": "J", "goal": "g",
+                                              "template": "nope"}).status_code == 400
+        job = client.post("/api/jobs", json={"project_id": project["id"], "title": "R", "goal": "g",
+                                             "template": "research_report",
+                                             "inputs": {"format": "docx", "unknown": "dropped"}}).json()
+        assert job["template"] == "research_report" and job["inputs"] == {"format": "docx"}
+        rt = client.app.state.runtime
+        rt.jobs.add_note(job["id"], "doc.md", "Lakes claim", "evidence about lakes")
+        assert client.get(f"/api/jobs/{job['id']}").json()["note_count"] == 1
+        assert client.get(f"/api/jobs/{job['id']}/notes?q=lakes").json()[0]["source"] == "doc.md"
+
+
 def test_context_api(settings, workspace):
     with TestClient(create_app(settings, EchoBackend(), run_jobs=False)) as client:
         project = client.post("/api/projects", json={"name": "P", "workspace_path": str(workspace)}).json()

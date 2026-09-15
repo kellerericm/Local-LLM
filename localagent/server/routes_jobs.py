@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from ..jobs.models import ACTIVE_JOB_STATUSES, AWAITING_APPROVAL, DEFAULT_BUDGET
 from ..jobs.planner import lint_plan, normalize_plan
 from ..jobs.scratchpad import CONTEXT_CHAR_LIMIT, ITEM_CHAR_LIMIT, context_chars
+from ..jobs.templates import list_templates
 
 ALLOWED_PERMISSIONS = {"cmd:network", "cmd:package-install", "cmd:process-control"}
 
@@ -15,6 +16,8 @@ class JobIn(BaseModel):
     project_id: str
     title: str
     goal: str
+    template: str = "generic"
+    inputs: dict = {}
     budget: dict | None = None             # {max_hours, max_steps, indefinite}
     schedule: str = "now"                  # now | background_hours
     permissions: list[str] = []
@@ -79,6 +82,17 @@ def register(app: FastAPI, rt) -> None:
     def list_jobs(project_id: str | None = None):
         return jobs.list_jobs(project_id)
 
+    @app.get("/api/job_templates")
+    def job_templates():
+        return list_templates()
+
+    @app.get("/api/jobs/{job_id}/notes")
+    def job_notes(job_id: str, q: str = "", source: str = ""):
+        job_or_404(job_id)
+        if q:
+            return jobs.search_notes(job_id, q, source or None, limit=100)
+        return jobs.list_notes(job_id, source or None)
+
     @app.post("/api/jobs")
     def create_job(body: JobIn):
         project = rt.store.get_project(body.project_id)
@@ -91,8 +105,14 @@ def register(app: FastAPI, rt) -> None:
         bad = set(body.permissions) - ALLOWED_PERMISSIONS
         if bad:
             raise HTTPException(400, f"Unknown permissions: {', '.join(sorted(bad))}")
-        job = jobs.create_job(body.project_id, body.title.strip(), body.goal.strip(), budget=_budget(body.budget),
-                              schedule=body.schedule, permissions=body.permissions, origin_chat_id=body.origin_chat_id)
+        known = {t["name"]: t for t in list_templates()}
+        if body.template not in known:
+            raise HTTPException(400, f"Unknown job type {body.template!r}")
+        allowed_inputs = set(known[body.template]["inputs"])
+        inputs = {k: v for k, v in (body.inputs or {}).items() if k in allowed_inputs and v not in (None, "")}
+        job = jobs.create_job(body.project_id, body.title.strip(), body.goal.strip(), template=body.template,
+                              inputs=inputs, budget=_budget(body.budget), schedule=body.schedule,
+                              permissions=body.permissions, origin_chat_id=body.origin_chat_id)
         jobs.journal(job["id"], "created", f"Job created: {job['goal']}")
         return runner._changed(job["id"], wake=True)
 
@@ -100,6 +120,7 @@ def register(app: FastAPI, rt) -> None:
     def get_job(job_id: str):
         job = job_or_404(job_id)
         return {"job": job, "tasks": jobs.list_tasks(job_id), "journal": jobs.list_journal(job_id, limit=300),
+                "note_count": len(jobs.list_notes(job_id)),
                 "context": jobs.list_context(job_id), "context_limit": CONTEXT_CHAR_LIMIT,
                 "runs": jobs.list_runs(job_id),
                 "pending_approvals": [a for a in rt.approvals.pending() if a.get("job_id") == job_id]}

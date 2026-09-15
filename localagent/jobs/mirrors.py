@@ -66,6 +66,7 @@ def write_mirrors(jobs, store, job_id: str) -> None:
         (folder / "plan.md").write_text(_plan_md(job, tasks), encoding="utf-8")
         (folder / "journal.md").write_text(_journal_md(job, jobs.list_journal(job_id)), encoding="utf-8")
         (folder / "scratchpad.md").write_text(render_markdown(job, tasks, jobs.list_context(job_id)), encoding="utf-8")
+        _write_notes(folder, jobs.list_notes(job_id))
     except Exception:
         log.exception("could not write job mirrors for %s", job_id)
 
@@ -109,6 +110,23 @@ def _plan_md(job: dict, tasks: list[dict]) -> str:
 
     walk(None, 0)
     return "\n".join(lines) + "\n"
+
+
+def _write_notes(folder: Path, notes: list[dict]) -> None:
+    if not notes:
+        return
+    notes_dir = folder / "notes"
+    notes_dir.mkdir(exist_ok=True)
+    by_source: dict[str, list[dict]] = {}
+    for n in notes:
+        by_source.setdefault(n["source"], []).append(n)
+    for source, items in by_source.items():
+        name = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in source)[:120] + ".md"
+        lines = [f"# Notes: {source}", ""]
+        for n in items:
+            loc = f" ({n['location']})" if n["location"] else ""
+            lines += [f"- **[n{n['id']}]**{loc} {n['claim']}", f"  > {n['quote']}"]
+        (notes_dir / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _journal_md(job: dict, entries: list[dict]) -> str:

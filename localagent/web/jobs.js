@@ -119,6 +119,7 @@ function renderJob() {
       budgetLine(job),
       questionsPanel(job, tasks),
       scratchpadPanel(job, J.data.context || [], J.data.context_limit || 6000),
+      J.data.note_count ? notesPanel(job, J.data.note_count) : null,
       h("section", {}, h("div", { class: "section-label" }, `Plan${tasks.length ? ` · ${planCounts(tasks)}` : ""}`),
         tasks.length ? planTree(job, tasks, runs) : h("p", { class: "muted" },
           job.status === "planning" ? "The agent is writing a plan. You'll review it before anything runs." : "No plan.")),
@@ -190,12 +191,25 @@ function questionsPanel(job, tasks) {
   if (job.inputs && job.inputs.pending_approval) questions.push({ text: `Approval needed: ${job.inputs.pending_approval}`, approval: true, label: "Planning" });
   for (const t of tasks) {
     if (t.status === "waiting_user" && t.question) {
-      questions.push({ text: t.question, taskId: t.id, label: `[${t.key}] ${t.title}`, approval: t.waiting_kind === "approval" });
+      questions.push({ text: t.question, taskId: t.id, label: `[${t.key}] ${t.title}`,
+        approval: t.waiting_kind === "approval", gate: t.waiting_kind === "gate" });
     }
   }
   if (!questions.length) return null;
   return h("section", { class: "job-questions" }, h("div", { class: "section-label" }, "Waiting on you"),
     questions.map((q) => {
+      if (q.gate) {
+        const feedback = h("textarea", { rows: 2, placeholder: "Or describe what to change…" });
+        const send = async (text) => {
+          try { await api("POST", `/api/jobs/${job.id}/answer`, { text, task_id: q.taskId }); loadJob(); }
+          catch (e) { toast(e.message); }
+        };
+        return h("div", { class: "ask" },
+          h("strong", {}, q.label), h("div", {}, q.text), feedback,
+          h("div", { class: "modal-actions" },
+            h("button", { class: "btn small", onclick: () => feedback.value.trim() && send(feedback.value.trim()) }, "Request changes"),
+            h("button", { class: "btn primary small", onclick: () => send("approve") }, "Approve")));
+      }
       if (q.approval) {
         return h("div", { class: "ask" },
           h("strong", {}, q.label), h("div", {}, q.text),
@@ -237,6 +251,27 @@ function scratchpadPanel(job, items, limit) {
         try { await api("DELETE", `/api/jobs/${job.id}/context/${i.id}`); loadJob(); } catch (e) { toast(e.message); }
       } }, "✕")))) : h("p", { class: "muted" }, "Empty so far."),
     h("div", { class: "context-add" }, input, h("button", { class: "btn small", onclick: add }, "Add")));
+}
+
+function notesPanel(job, count) {
+  const list = h("div", { class: "notes-list" });
+  const search = h("input", { type: "text", placeholder: "Search notes…" });
+  const load = async () => {
+    try {
+      const notes = await api("GET", `/api/jobs/${job.id}/notes?q=${encodeURIComponent(search.value.trim())}`);
+      list.replaceChildren(...(notes.length ? notes.map((n) => h("div", { class: "note" },
+        h("div", {}, h("span", { class: "tkey" }, `n${n.id}`), " ", h("strong", {}, n.claim)),
+        h("blockquote", {}, `“${n.quote}”`),
+        h("div", { class: "muted" }, `${n.source}${n.location ? ` · ${n.location}` : ""}${n.task_key ? ` · [${n.task_key}]` : ""}`)))
+        : [h("p", { class: "muted" }, "No matching notes.")]));
+    } catch (e) { toast(e.message); }
+  };
+  search.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); load(); } });
+  const details = h("details", { class: "job-notes" },
+    h("summary", {}, `Evidence notes (${count}) · quotes verified against their sources`),
+    h("div", { class: "context-add" }, search, h("button", { class: "btn small", onclick: load }, "Search")), list);
+  details.addEventListener("toggle", () => { if (details.open && !list.children.length) load(); });
+  return details;
 }
 
 function planTree(job, tasks, runs) {
@@ -349,9 +384,30 @@ function permissionFields(selected = []) {
   };
 }
 
-function newJobDialog(project) {
+async function newJobDialog(project) {
+  let templates = [];
+  try { templates = await api("GET", "/api/job_templates"); } catch { templates = [{ name: "generic", label: "General task", description: "", inputs: {} }]; }
   const title = h("input", { type: "text", placeholder: "e.g. Lake report" });
   const goal = h("textarea", { rows: 5, placeholder: "Describe the outcome you want, where the inputs are, and what the result should look like." });
+  const typeSel = h("select", {}, templates.map((t) => h("option", { value: t.name }, t.label)));
+  const typeHint = h("div", { class: "hint" });
+  const inputsBox = h("div", { class: "grid2" });
+  const inputEls = {};
+  const renderInputs = () => {
+    const t = templates.find((x) => x.name === typeSel.value) || templates[0];
+    typeHint.textContent = t.description;
+    inputsBox.replaceChildren();
+    for (const k of Object.keys(inputEls)) delete inputEls[k];
+    for (const [key, spec] of Object.entries(t.inputs || {})) {
+      const el = spec.enum
+        ? h("select", {}, spec.enum.map((v) => h("option", { value: v, selected: v === spec.default }, v)))
+        : h("input", { type: "text", value: spec.default ?? "" });
+      inputEls[key] = el;
+      inputsBox.append(field(spec.label || key, el));
+    }
+  };
+  typeSel.addEventListener("change", renderInputs);
+  renderInputs();
   const schedule = h("select", {},
     h("option", { value: "now" }, "Run whenever possible"),
     h("option", { value: "background_hours" }, "Only during background hours (Settings → Resources)"));
@@ -362,8 +418,10 @@ function newJobDialog(project) {
   openModal(
     h("h3", {}, `New job in ${project.name}`),
     h("p", {}, "A job is a long-running task. The agent first writes a plan for you to approve, then works through it in the background. Chats always come first; you can pause or stop it anytime."),
+    field("Job type", typeSel, typeHint),
     field("Title", title),
     field("Goal", goal),
+    inputsBox,
     budget.el,
     field("Schedule", schedule),
     perms.el,
@@ -371,8 +429,9 @@ function newJobDialog(project) {
       h("button", { type: "button", class: "btn ghost", onclick: () => dlg.close() }, "Cancel"),
       h("button", { type: "button", class: "btn primary", onclick: async () => {
         try {
+          const inputs = Object.fromEntries(Object.entries(inputEls).map(([k, el]) => [k, el.value.trim()]));
           const job = await api("POST", "/api/jobs", { project_id: project.id, title: title.value.trim(), goal: goal.value.trim(),
-            budget: budget.read(), schedule: schedule.value, permissions: perms.read() });
+            template: typeSel.value, inputs, budget: budget.read(), schedule: schedule.value, permissions: perms.read() });
           dlg.close();
           S.collapsed[project.id] = false;
           store.set("collapsedProjects", S.collapsed);

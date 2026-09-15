@@ -32,5 +32,13 @@ Qwen3.5-9B passed 10/10 with thinking on. Unknowns:
 
 This probably differs between short tool steps and planning/synthesis steps, so the Phase 3 job runner may want different settings per step type. Measure with the benchmark (thinking on / off / budgeted) and later with long-running tasks.
 
+## Approval process for paper downloads in unattended research jobs (return to later)
+The `deep_research` template (design §6.4) downloads open-access papers while running unattended. Today's options: the job-level "network" pre-approval (broad), or per-download approval requests (each parks a paper until answered). Neither is right yet. To decide:
+- **Scope:** allowlist specific hosts (arxiv.org, api.openalex.org, api.semanticscholar.org, known OA repositories) per job, rather than all network access? Should publisher domains need a separate approval?
+- **Granularity:** approve the seed list and "follow citations" once, or each round's download list (with counts and sources shown)?
+- **Limits and etiquette:** download caps per job, rate limiting and a polite User-Agent for APIs, and honoring terms of use and robots rules.
+- **Provenance:** record where each file came from (URL, license or OA status, time) in the job, and show it in the report's bibliography.
+- **Safety:** downloaded PDFs are untrusted input. Text extraction only, never executing embedded content. Size limits. Should instructions found inside papers be ignored (prompt-injection risk)?
+
 ## Sandbox strength
 The command policy is pattern-based and best-effort. Is a stronger isolation layer worth it on Windows (Windows Sandbox, a restricted token, a separate low-privilege user account)?

@@ -13,3 +13,5 @@ jsonschema
 zstandard
 pytest
 httpx
+pypdf
+python-docx

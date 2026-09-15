@@ -3,6 +3,26 @@
 Record failures here: date, what was run, what happened (exact error), suspected cause, status (open / fixed / won't fix).
 A failure is information, not a verdict.
 
+## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
+- **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)
+- **What happened:**
+  - After the restart, task t2's resumed attempt ran Python that used `subprocess`, which correctly requested approval.
+  - The script didn't answer approvals, and the whole JobRunner thread waited in `ApprovalBroker.request` for 68 minutes with 0 further steps.
+  - The job still showed "running".
+- **Cause:** job sessions used the blocking chat approval path. This contradicts design §3.5 ("a pending approval blocks only its task").
+- **Fix:**
+  - `ApprovalBroker.request_async` plus `ApprovalPending`: the task parks as `waiting_user`/`approval` and the runner continues. The decision callback re-queues the task, allowed once or denied with a note.
+  - Restart recovery releases tasks parked on lost approvals, and the job view shows approval waits.
+  - Tests: `test_approval_parks_task_without_blocking_others`, `test_denied_approval_tells_task_not_to_retry`, `test_recover_releases_tasks_parked_on_lost_approvals`.
+- **Also in that run:** planning failed twice by guessing a nonexistent `tune_me/` subfolder. Fixed with the workspace listing in planning prompts (`test_plan_request_lists_workspace`).
+- **Status:** fixed; verified in run 2.
+
+## 2026-09-14 — Phase 3a E2E run 2: job didn't finish and left a worse result
+- **Run:** same probe, after the fixes.
+- **What happened:** 5/8 tasks done in 90 minutes, and the final model.py scored 5.38 vs the 3.01 baseline. Details in experiments.md.
+- **Cause:** generic plans have no keep/revert discipline, and their checks couldn't fail. The analysis error propagated through the scratchpad context unreviewed. Scope creep in the first task.
+- **Status:** open, by design for now. The auto_research template (3c) addresses keep/revert. Reviewer pass (3b): extend to claims written to context. Plan lint: reject can't-fail checks when the goal has a measurable target.
+
 ## 2026-09-14 — Qwen3.5-9B bench: generation never stopped at end of turn (run invalid)
 - **Run:** full benchmark, `Qwen/Qwen3.5-9B`, 4-bit. Scored 7/10, but the run is invalid.
 - **What happened:**

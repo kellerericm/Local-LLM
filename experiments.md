@@ -9,6 +9,35 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-14 — Phase 3a end-to-end: generic job on sandbox/tune_me (Qwen3.5-9B)
+- **Question:** Does a generic job run to completion with the real model, survive a server kill mid-task, and produce a good result?
+- **Setup:**
+  - Script: `bench/probes/job_e2e.py`, driving the real server over HTTP and playing the user (approves the plan, answers questions and approvals).
+  - Settings: reasoning budget 2000; job budget 1.5 h / 300 steps; 90-minute test limit.
+  - Raw results: `D:\LocalAgent\bench-runs\20260914-184352_job_e2e\` (run 1), `…\20260914-202308_job_e2e\` (run 2).
+- **Run 1 (before fixes):**
+  - Planning failed twice by guessing a `tune_me/` subfolder.
+  - After the kill and restart, the resumed task asked for approval, and **the whole runner blocked on it for 68 minutes**.
+  - Led to non-blocking job approvals, a workspace listing in planning prompts, and the scratchpad.
+- **Run 2 (with fixes):**
+  - Infrastructure ✅:
+    - planned on the first try (8 tasks)
+    - kill and restart mid-task: the task resumed with its checklist and completed
+    - an approval parked task t2 while t3 ran; approving re-queued t2, which completed
+    - the scratchpad was used: 13 context items, checklists on every task
+  - Outcome ❌: not finished in 90 minutes (5/8 tasks, 130 steps, ~39 s/step), and **final model.py scored 5.38, worse than the 3.01 baseline**.
+- **Why the result was bad:**
+  1. **No keep/revert.** Each "try X" task overwrote model.py whatever its score.
+  2. **Checks that can't fail.** Most tasks used `command_ok: python evaluate.py`, which exits 0 regardless of score. Plan lint accepted it, and "New score recorded" passed the concreteness heuristic because it mentions "score".
+  3. **Wrong analysis propagated.** t2 counted noise local maxima as 66 peaks (frequency ~6.67 vs a true ~0.13 cycles/unit) and wrote it to context. Later tasks trusted it, and no reviewer questioned it.
+  4. **Scope creep.** t1 ("get baseline") ran experiments, hit the 30-step limit, and recorded a misleading context note.
+- **Conclusions:**
+  - 3a's mechanics (resume, non-blocking approvals, scratchpad, chat/job coexistence) work with the real model.
+  - Generic jobs are not suitable for optimization work. That needs the `auto_research` template (3c): coordinator-owned keep/revert, measured scores, a held-out split.
+  - 3b's reviewer should check claims written to context, not just final outputs.
+  - Plan lint should reject checks that can't fail when the goal has a measurable target.
+  - Speed (~39 s/step) makes long jobs slow; the kernel question in open_questions.md matters more now.
+
 ## 2026-09-14 — Phase 3 capability probes (Qwen3.5-9B)
 - **Question:** Can the default model fill the roles the Phase 3 job design gives it (planning, note-taking with quotes, reviewing, experimenting)?
 - **Setup:**

@@ -95,14 +95,19 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
         hint = f" The closest passage is: \"{near}\"" if near else ""
         tried = getattr(conv, "rejected_quotes", None)
         if tried is None:
-            tried = conv.rejected_quotes = set()
+            tried = conv.rejected_quotes = []
         if quote.strip() in tried:
             hint += (" You already sent this exact quote and it was rejected; resending it won't work. Copy a phrase "
                      "character for character from the closest passage above, or skip this note.")
-        tried.add(quote.strip())
-        return ToolResult("Note not saved: the quote doesn't appear word for word in the source. Copy the exact words "
+        tried.append(quote.strip())
+        if len(tried) >= 3:
+            hint += (f" ({len(tried)} quotes rejected in this task so far. Notes are optional extras: if you've saved "
+                     "a few already, skip this claim and finish the task.)")
+        # A rejected quote is the check working, not a tool malfunction: ok=True so it doesn't count toward the
+        # consecutive-failure stop (dry run 7 threw away finished parts that way).
+        return ToolResult("Note NOT saved: the quote doesn't appear word for word in the source. Copy the exact words "
                           "(a shorter exact quote is fine; the claim can be in your own words, only the quote is "
-                          f"checked).{hint}", ok=False)
+                          f"checked).{hint}")
     task = getattr(conv, "task", None)
     task_key = task and task["key"]
     source_name = _source_name(ctx, path)
@@ -114,7 +119,9 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
     note = conv.jobs.add_note(conv.job["id"], source_name, claim.strip(), quote.strip(), location.strip(),
                               tags, task_key)
     conv.runner._changed(conv.job["id"])
-    return ToolResult(f"Saved note n{note['id']} (quote verified in {note['source']}). Cite it as [n{note['id']}].")
+    where = _source_name(ctx, path)
+    recorded = f"; recorded for the paper {note['source']}" if where != note["source"] else ""
+    return ToolResult(f"Saved note n{note['id']} (quote verified in {where}{recorded}). Cite it as [n{note['id']}].")
 
 
 def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int = 10, brief: bool = False) -> ToolResult:

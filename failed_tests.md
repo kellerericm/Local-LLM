@@ -53,6 +53,12 @@ A failure is information, not a verdict.
   - **Fixes:**
     - The check accepts any "## " heading.
     - file_contains failures now name the required text.
+- **Rerun 7, 2026-09-15 09:51: parts 1–3 done, but part 4 failed all 3 attempts with needs_help; stopped by hand.**
+  - Each attempt wrote the summary and saved 3–6 notes. Then 3 rejected quotes in a row (the model paraphrasing one claim) tripped the consecutive-failure stop, which threw away a part whose work was done.
+  - The success message "verified in papers/text/…" also made the model think notes went to the wrong file.
+  - **Fixes:**
+    - A rejected quote is no longer a tool failure (ok=True, "Note NOT saved"). After 3 rejections in a task the message says notes are optional and to finish.
+    - Saves say "verified in <part>; recorded for the paper <source>".
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

@@ -242,7 +242,8 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
                       "instructions": PART.format(part=part, k=k, n=n, title=p["title"], source=p["file_path"],
                                                   summary=summary, question=job["goal"]),
                       "done_when": f"{summary} exists with section summaries",
-                      "checks": [{"type": "file_contains", "path": summary, "text": "### "}]})
+                      # "## " also matches "### ": accept either heading level (run 6 failed 3 times on "## Abstract")
+                      "checks": [{"type": "file_contains", "path": summary, "text": "## "}]})
     md = paper_md(p["key"])
     if p["meta_references"]:
         refs = REFS_KNOWN

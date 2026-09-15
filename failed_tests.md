@@ -46,6 +46,13 @@ A failure is information, not a verdict.
     - The write-up instructions are numbered one-time steps and say checks run automatically on complete_task.
   - Also noted, cosmetic: a PMC article's back matter gave an empty "## References" heading in the last part; the real list was set aside correctly.
   - Harness: use `--minutes 600` for deep research runs.
+- **Rerun 6, 2026-09-15 09:36: part 1 failed 3 attempts on a too-strict check; stopped by hand.**
+  - Notes were fine: 6 saved, and the repeat guard never fired.
+  - The part check required "### " but the model wrote "## Abstract", copying the paper's own heading level.
+  - The failure said only "text not found in file", so retries never learned what was missing.
+  - **Fixes:**
+    - The check accepts any "## " heading.
+    - file_contains failures now name the required text.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

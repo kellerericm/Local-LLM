@@ -129,7 +129,8 @@ def _run_one(c: dict, workspace, env_path, guard, policy, ask, cancel) -> CheckR
         if not p.is_file():
             return CheckResult(c, False, "file not found")
         text = p.read_text(encoding="utf-8", errors="replace")
-        return CheckResult(c, c["text"] in text, "found" if c["text"] in text else "text not found in file")
+        return CheckResult(c, c["text"] in text, "found" if c["text"] in text
+                           else f"the file doesn't contain the required text {c['text']!r}")
     if t == "json_valid":
         p = _path(c, workspace, guard)
         if not p.is_file():

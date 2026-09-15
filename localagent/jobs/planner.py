@@ -18,6 +18,7 @@ CHECK_TYPES = {
     "command_ok": ["command"],
     "citations_valid": ["path"],
     "notes_for_source": ["source"],
+    "references_recorded": ["paper"],
 }
 
 _VAGUE = re.compile(r"\b(has|have|is|are|was|were) (been )?(read|reviewed|considered|understood|identified|analy[sz]ed|"

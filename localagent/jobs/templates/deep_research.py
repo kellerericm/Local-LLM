@@ -1,0 +1,427 @@
+"""deep_research: literature research by citation snowballing (design §6.4).
+
+Flow:
+  seed (code) → [seed gate, for query/list seeds] → round 0: per paper acquire (code) + read (agent, reviewed)
+  → citations_r0 (code): count how often read papers cite each unread work; stop or pick the next round
+  → ... → layout (agent, reviewed) → layout gate → sections (agent, reviewed) → abstract → compile (code)
+"""
+from __future__ import annotations
+
+import math
+import re
+from pathlib import Path
+
+from ..scholar import ScholarClient, Work, normalize_title, work_key
+from ..sessions import JobApprover
+from . import register
+from .base import HandlerResult, Template, is_approval
+from .research_report import compile_report, find_sources, slug, workspace_of
+
+DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4, "min_citations": 3,
+            "min_fraction": 0.15, "per_round": 8, "seed_count": 10, "format": "md"}
+NET_KEY = "net:open-access"
+PDF_DIR = "papers/pdf"
+
+READ_PAPER = """Read {path} completely with read_document (page through it with offset until the end; keep a checklist of \
+the sections you've covered). Write {md} containing:
+- '# {title}'
+- '## Section summaries': one '### <section name>' per section of the paper, each with a 3-6 sentence summary.
+- '## Key claims': bullets for the paper's important claims, each citing a note you saved with add_note (exact quote \
+from {path}), like [n12].
+- '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the \
+research question: {question}
+Then call record_references with every entry in the paper's reference list (title, first author, year, and DOI or arXiv \
+id when shown). If the text can't be read (e.g. a scanned PDF), call fail_task and say so."""
+
+LAYOUT = """Plan the report answering: {question}
+Read citation_graph.md (the most-cited works) and the paper summaries in papers/*.md, and use search_notes. Write outline.md:
+- '# <report title>'
+- '## Abstract' (a placeholder line; it's written last)
+- '## Introduction and scope'
+- '## Literature review' with '### <theme>' subsections grouping the papers, bullets citing notes [n12]
+- '## Foundational works': the most-cited papers that were read and why they matter, citing notes
+- '## Synthesis: agreements, conflicts, and gaps', citing notes on both sides of each disagreement
+- '## Conclusion and summary'"""
+
+SECTION = """Write the report section "{heading}" to {path}, following its part of outline.md (including any '###' \
+subsections). Start the file with '## {heading}'. Use the paper summaries in papers/*.md and search_notes; support \
+every factual claim with note citations like [n12]. Present disagreements between papers as disagreements."""
+
+ABSTRACT = """Read all section files in sections/ and write sections/00-abstract.md: '## Abstract', then 150-250 words \
+covering the question, the scope of the literature (how many papers, how they were selected by citation), the main \
+findings, the key disagreements, and the conclusion. Cite the most important notes like [n12]."""
+
+
+def cfg(job: dict) -> dict:
+    c = {**DEFAULTS, **{k: v for k, v in (job.get("inputs") or {}).items() if v not in (None, "")}}
+    for k in ("max_papers", "max_rounds", "min_citations", "per_round", "seed_count"):
+        c[k] = int(c[k])
+    c["min_fraction"] = float(c["min_fraction"])
+    return c
+
+
+def scholar(runner) -> ScholarClient:
+    client = getattr(runner, "scholar", None)
+    if client is None:
+        client = runner.scholar = ScholarClient()
+    return client
+
+
+def require_network(runner, job, task, why: str) -> None:
+    """Raises ApprovalPending (task parks) unless open-access network use is pre-approved or approved."""
+    JobApprover(runner.approvals, runner, job, task["id"]).request(
+        None, job["project_id"], [NET_KEY], "Search open scholarly indexes and download open-access papers", why)
+
+
+def paper_md(key: str) -> str:
+    return f"papers/{slug(key.replace(':', '-'))[:60]}.md"
+
+
+def pdf_path(key: str) -> str:
+    return f"{PDF_DIR}/{slug(key.replace(':', '-'))[:60]}.pdf"
+
+
+def register_work(runner, job, w: Work, round_: int, status: str = "queued", cited_by: int = 0) -> dict:
+    return runner.jobs.upsert_paper(job["id"], w.key(), title=w.title, year=w.year, authors=w.authors, doi=w.doi,
+                                    openalex_id=w.openalex_id, arxiv_id=w.arxiv_id, oa_pdf_url=w.oa_pdf_url,
+                                    meta_references=w.referenced_works, round=round_, status=status,
+                                    cited_by_read=cited_by)
+
+
+def write_seeds_md(ws: Path, papers: list[dict]) -> None:
+    lines = ["# Seed papers", "", "| # | Title | Year | Status | Source |", "|---|---|---|---|---|"]
+    for i, p in enumerate(papers, 1):
+        where = p["file_path"] or (p["doi"] and f"doi:{p['doi']}") or (p["openalex_id"] and f"OpenAlex {p['openalex_id']}") or "-"
+        lines.append(f"| {i} | {p['title']} | {p['year'] or ''} | {p['status']} | {where} |")
+    (ws / "seeds.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------- plan
+def _initial_plan(runner, job):
+    c = cfg(job)
+    if c["seed_mode"] not in ("folder", "list", "query"):
+        raise ValueError("seed_mode must be folder, list, or query")
+    tasks = [{"key": "seed", "title": "Find the starting papers", "kind": "code", "handler": "seed",
+              "instructions": f"Seed mode: {c['seed_mode']}", "done_when": "seed papers registered"}]
+    if c["seed_mode"] in ("list", "query"):
+        tasks.append({"key": "seed_gate", "title": "Your review of the seed papers", "kind": "gate", "depends_on": ["seed"],
+                      "params": {"prompt": "Review seeds.md (the starting papers). Reply 'approve', 'drop 2, 5' to remove "
+                                           "papers, or type a different search query."}})
+    return tasks
+
+
+def expand_round(runner, job, round_: int) -> int:
+    ws = workspace_of(runner, job)
+    papers = [p for p in runner.jobs.list_papers(job["id"], "queued") if p["round"] == round_]
+    if not papers:
+        return 0
+    group = f"round{round_}"
+    tasks = [{"key": group, "title": f"Round {round_}: read {len(papers)} paper(s)", "instructions": "-", "done_when": "-"}]
+    for i, p in enumerate(papers, 1):
+        source = p["file_path"] or pdf_path(p["key"])
+        md = paper_md(p["key"])
+        tasks.append({"key": f"a{round_}_{i}", "parent_key": group, "title": f"Get: {p['title'][:70]}", "kind": "code",
+                      "handler": "acquire", "params": {"paper": p["key"]}, "instructions": "-",
+                      "done_when": "paper text available or skipped"})
+        tasks.append({"key": f"p{round_}_{i}", "parent_key": group, "title": f"Read: {p['title'][:70]}", "review": True,
+                      "depends_on": [f"a{round_}_{i}"], "params": {"paper": p["key"], "source": source, "md": md},
+                      "instructions": READ_PAPER.format(path=source, md=md, title=p["title"], question=job["goal"]),
+                      "done_when": f"{md} has section summaries, key claims citing notes, and a value assessment; "
+                                   "references recorded",
+                      "checks": [{"type": "file_contains", "path": md, "text": "## Value of this paper"},
+                                 {"type": "citations_valid", "path": md},
+                                 {"type": "references_recorded", "paper": p["key"]}]})
+        runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
+    tasks.append({"key": f"cite_r{round_}", "title": f"Round {round_}: follow the citations", "kind": "code",
+                  "handler": "citations", "depends_on": [group], "params": {"round": round_}, "instructions": "-",
+                  "done_when": "citation counts computed and next step decided"})
+    runner.jobs.append_tasks(job["id"], tasks)
+    runner.jobs.journal(job["id"], "plan", f"Round {round_}: added tasks to get and read {len(papers)} paper(s).")
+    return len(papers)
+
+
+def expand_report(runner, job, reason: str) -> None:
+    runner.jobs.append_tasks(job["id"], [
+        {"key": "layout", "title": "Plan the report layout", "instructions": LAYOUT.format(question=job["goal"]),
+         "done_when": "outline.md has abstract, introduction, literature review, foundational works, synthesis, "
+                      "and conclusion sections", "review": True,
+         "checks": [{"type": "file_contains", "path": "outline.md", "text": "## Abstract"},
+                    {"type": "file_contains", "path": "outline.md", "text": "## Literature review"},
+                    {"type": "file_contains", "path": "outline.md", "text": "## Conclusion and summary"},
+                    {"type": "citations_valid", "path": "outline.md"}]},
+        {"key": "layout_gate", "title": "Your review of the report layout", "kind": "gate", "depends_on": ["layout"],
+         "params": {"prompt": f"Reading finished ({reason}). Review outline.md. Reply 'approve' to write the report, "
+                              "or describe what to change."}},
+    ])
+    runner.jobs.journal(job["id"], "plan", f"Literature search finished: {reason}. Added report planning.")
+
+
+def expand_sections(runner, job) -> None:
+    ws = workspace_of(runner, job)
+    headings = [h.strip() for h in re.findall(r"^##\s+(.+)$", (ws / "outline.md").read_text(encoding="utf-8"), re.M)]
+    body = [h for h in headings if h.lower() != "abstract"]
+    tasks = [{"key": "write", "title": "Write the report", "instructions": "-", "done_when": "-", "depends_on": ["layout_gate"]}]
+    keys = []
+    for i, heading in enumerate(body, 1):
+        path = f"sections/{i:02d}-{slug(heading)}.md"
+        keys.append(f"s{i}")
+        tasks.append({"key": f"s{i}", "parent_key": "write", "title": f"Write section: {heading}", "review": True,
+                      "instructions": SECTION.format(heading=heading, path=path),
+                      "done_when": f"{path} exists, starts with the heading, and cites valid notes",
+                      "checks": [{"type": "file_contains", "path": path, "text": f"## {heading}"},
+                                 {"type": "citations_valid", "path": path}]})
+    tasks.append({"key": "abstract", "parent_key": "write", "title": "Write the abstract", "instructions": ABSTRACT,
+                  "depends_on": keys, "review": True, "done_when": "sections/00-abstract.md exists with a cited abstract",
+                  "checks": [{"type": "file_contains", "path": "sections/00-abstract.md", "text": "## Abstract"},
+                             {"type": "citations_valid", "path": "sections/00-abstract.md"}]})
+    tasks.append({"key": "compile", "title": "Compile the report", "kind": "code", "handler": "compile",
+                  "depends_on": ["write"], "instructions": "-", "done_when": "report exists"})
+    runner.jobs.append_tasks(job["id"], tasks)
+
+
+# ---------------------------------------------------------------- handlers
+def handle_seed(runner, job, task) -> HandlerResult:
+    c = cfg(job)
+    ws = workspace_of(runner, job)
+    mode = c["seed_mode"]
+    if mode == "folder":
+        folder = c["seeds"] or "papers"
+        files = find_sources(ws, folder)
+        if not files:
+            return HandlerResult(False, f"No papers found in {folder}/", retry_guidance=f"Add papers to {folder}/")
+        for f in files[:c["max_papers"]]:
+            rel = f.relative_to(ws).as_posix()
+            runner.jobs.upsert_paper(job["id"], "local:" + rel, title=f.stem.replace("_", " "), file_path=rel, round=0,
+                                     status="queued", provenance={"source": "local file"})
+    else:
+        require_network(runner, job, task, f"Find seed papers for: {c['seeds'] or job['goal']}")
+        client = scholar(runner)
+        works: list[Work] = []
+        if mode == "query":
+            works = client.search(c["seeds"] or job["goal"], c["seed_count"])
+        else:
+            for line in [l.strip() for l in str(c["seeds"]).splitlines() if l.strip()]:
+                doi = re.search(r"10\.\d{4,9}/\S+", line)
+                arxiv = re.search(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)\s*([\w.\-/]+?)(?:v\d+)?(?:\.pdf)?$", line, re.I)
+                w = client.get_by_doi(doi.group(0).rstrip(".,")) if doi else None
+                if w is None and not arxiv:
+                    w = client.find_by_title(line)
+                if w is None:
+                    w = Work(None, line, arxiv_id=arxiv.group(1) if arxiv else None,
+                             oa_pdf_url=f"https://arxiv.org/pdf/{arxiv.group(1)}" if arxiv else None)
+                works.append(w)
+        if not works:
+            return HandlerResult(False, "The search found no papers.", retry_guidance="Try a different query.")
+        for w in works:
+            register_work(runner, job, w, 0)
+    papers = [p for p in runner.jobs.list_papers(job["id"]) if p["round"] == 0]
+    write_seeds_md(ws, papers)
+    return HandlerResult(True, f"Registered {len(papers)} seed paper(s); listed in seeds.md.")
+
+
+def handle_acquire(runner, job, task) -> HandlerResult:
+    ws = workspace_of(runner, job)
+    p = runner.jobs.get_paper(job["id"], task["params"]["paper"])
+    read_task = next((t for t in runner.jobs.list_tasks(job["id"]) if t["params"].get("paper") == p["key"]
+                      and t["kind"] == "agent"), None)
+    if p["file_path"] and (ws / p["file_path"]).is_file():
+        runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
+        return HandlerResult(True, f"Using {p['file_path']}.")
+    target = pdf_path(p["key"])
+    if (ws / target).is_file():
+        runner.jobs.upsert_paper(job["id"], p["key"], file_path=target, status="reading",
+                                 provenance={"source": "added by user"})
+        return HandlerResult(True, f"Using {target} (added by you).")
+    answers = [m.group(1).lower() for g in task["guidance"] for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
+    if answers and "skip" in answers[-1]:
+        runner.jobs.upsert_paper(job["id"], p["key"], status="skipped")
+        if read_task:
+            runner.jobs.update_task(read_task["id"], status="skipped")
+        return HandlerResult(True, "Skipped at your request.")
+    if p["oa_pdf_url"]:
+        require_network(runner, job, task, f"Download the open-access PDF of \"{p['title']}\" from {p['oa_pdf_url']}")
+        try:
+            if scholar(runner).download_pdf(p["oa_pdf_url"], ws / target):
+                import datetime as dt
+                runner.jobs.upsert_paper(job["id"], p["key"], file_path=target, status="reading", provenance={
+                    "source": "open-access download", "url": p["oa_pdf_url"], "retrieved": dt.datetime.now().isoformat()})
+                return HandlerResult(True, f"Downloaded the open-access PDF to {target}.")
+        except Exception as e:
+            runner.jobs.journal(job["id"], "acquire", f"Download failed for {p['title']}: {e}", task["key"])
+    runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable")
+    year = f" ({p['year']})" if p["year"] else ""
+    return HandlerResult(False, "No open-access copy", wait_question=(
+        f"No open-access copy found for \"{p['title']}\"{year}. Add the PDF to the workspace as {target} and reply "
+        "'added', or reply 'skip'."))
+
+
+def reference_keys(p: dict) -> list[tuple[str, dict]]:
+    if p["meta_references"]:
+        return [(f"oa:{w}", {"openalex_id": w}) for w in p["meta_references"]]
+    return [(r["key"], r) for r in p["extracted_references"]]
+
+
+def handle_citations(runner, job, task) -> HandlerResult:
+    c = cfg(job)
+    ws = workspace_of(runner, job)
+    round_ = int(task["params"]["round"])
+    papers = runner.jobs.list_papers(job["id"])
+    read = [p for p in papers if p["status"] == "read"]
+    known = {p["key"] for p in papers}
+    counts: dict[str, int] = {}
+    info: dict[str, dict] = {}
+    for p in read:
+        for key, meta in {k: m for k, m in reference_keys(p)}.items():
+            counts[key] = counts.get(key, 0) + 1
+            info.setdefault(key, meta)
+    for p in papers:                                   # how often read papers cite papers we have
+        if p["key"] in counts:
+            runner.jobs.upsert_paper(job["id"], p["key"], cited_by_read=counts[p["key"]])
+    threshold = max(c["min_citations"], math.ceil(c["min_fraction"] * len(read)))
+    candidates = sorted(((k, n) for k, n in counts.items() if k not in known and n >= threshold),
+                        key=lambda kv: -kv[1])
+    reason = None
+    if len(read) >= c["max_papers"]:
+        reason = f"reached the {c['max_papers']}-paper limit"
+    elif round_ >= c["max_rounds"]:
+        reason = f"reached the {c['max_rounds']}-round limit"
+    elif not candidates:
+        reason = f"converged: no unread work is cited by {threshold} or more of the {len(read)} papers read"
+    _write_graph(ws, counts, info, papers, threshold)
+    rounds = (job.get("inputs") or {}).get("citation_rounds") or []
+    entry = {"round": round_, "read": len(read), "threshold": threshold, "candidates": len(candidates)}
+    if reason:
+        entry["stop"] = reason
+    else:
+        take = candidates[:min(c["per_round"], c["max_papers"] - len(read))]
+        needs_net = any(k.startswith(("oa:", "doi:", "t:")) for k, _ in take)
+        if needs_net:
+            require_network(runner, job, task, f"Look up {len(take)} cited paper(s) for round {round_ + 1}")
+        client = scholar(runner)
+        oa_ids = [k[3:] for k, _ in take if k.startswith("oa:")]
+        by_id = {f"oa:{w.openalex_id}": w for w in (client.get_by_ids(oa_ids) if oa_ids else [])}
+        added = 0
+        for k, n in take:
+            meta = info.get(k, {})
+            w = by_id.get(k)
+            if w is None and k.startswith("doi:"):
+                w = client.get_by_doi(k[4:])
+            if w is None and meta.get("title"):
+                w = client.find_by_title(meta["title"], meta.get("year"))
+            if w is None:
+                w = Work(None, meta.get("title") or k, meta.get("year"), doi=meta.get("doi"), arxiv_id=meta.get("arxiv"),
+                         oa_pdf_url=f"https://arxiv.org/pdf/{meta['arxiv']}" if meta.get("arxiv") else None)
+            # keep the counted key so later rounds recognize the work as known
+            runner.jobs.upsert_paper(job["id"], k, title=w.title, year=w.year, authors=w.authors, doi=w.doi,
+                                     openalex_id=w.openalex_id, arxiv_id=w.arxiv_id, oa_pdf_url=w.oa_pdf_url,
+                                     meta_references=w.referenced_works, round=round_ + 1, status="queued",
+                                     cited_by_read=n)
+            added += 1
+        entry["selected"] = added
+    rounds.append(entry)
+    runner.jobs.update_job(job["id"], inputs={**(job.get("inputs") or {}), "citation_rounds": rounds})
+    if reason:
+        return HandlerResult(True, f"Stopping the literature search: {reason}. See citation_graph.md.")
+    return HandlerResult(True, f"Round {round_}: {len(read)} papers read; {len(candidates)} unread works cited by ≥{threshold}; "
+                               f"reading the top {entry['selected']} next. See citation_graph.md.")
+
+
+def _write_graph(ws: Path, counts, info, papers, threshold) -> None:
+    by_key = {p["key"]: p for p in papers}
+    lines = ["# Citation graph", "", f"Works cited by the papers read so far (threshold for following: {threshold}).", "",
+             "| Cited by | Work | Status |", "|---|---|---|"]
+    for k, n in sorted(counts.items(), key=lambda kv: -kv[1])[:40]:
+        p = by_key.get(k)
+        title = (p and p["title"]) or info.get(k, {}).get("title") or k
+        lines.append(f"| {n} | {title} | {(p and p['status']) or 'not read'} |")
+    (ws / "citation_graph.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def handle_compile(runner, job, task) -> HandlerResult:
+    papers = runner.jobs.list_papers(job["id"])
+    read = sorted((p for p in papers if p["status"] == "read"), key=lambda p: -p["cited_by_read"])
+    missing = [p for p in papers if p["status"] in ("unavailable", "skipped")]
+    rounds = (job.get("inputs") or {}).get("citation_rounds") or []
+    lines = ["## Bibliography", ""]
+    for p in read:
+        authors = ", ".join(p["authors"][:3]) + (" et al." if len(p["authors"]) > 3 else "")
+        ident = f" doi:{p['doi']}" if p["doi"] else (f" arXiv:{p['arxiv_id']}" if p["arxiv_id"] else "")
+        cited = f" — cited by {p['cited_by_read']} of the papers read" if p["cited_by_read"] else ""
+        lines.append(f"- {authors + '. ' if authors else ''}{p['title']} ({p['year'] or 'n.d.'}).{ident}{cited}")
+    lines += ["", "## How the literature was gathered", "",
+              f"{len(read)} papers were read over {len(rounds)} citation round(s)."]
+    for r in rounds:
+        lines.append(f"- Round {r['round']}: {r['read']} read, follow threshold {r['threshold']}, "
+                     + (f"stopped: {r['stop']}" if r.get("stop") else f"{r.get('selected', 0)} cited works selected next"))
+    if missing:
+        lines += ["", "Papers that couldn't be obtained or were skipped:"] + [f"- {p['title']} ({p['year'] or 'n.d.'})"
+                                                                            for p in missing]
+    return compile_report(runner, job, task, title_default="Literature review", front=["sections/00-abstract.md"],
+                          extra_appendix="\n".join(lines))
+
+
+# ---------------------------------------------------------------- template
+class DeepResearch(Template):
+    def initial_plan(self, runner, job):
+        return _initial_plan(runner, job)
+
+    def on_task_done(self, runner, job, task):
+        c = cfg(job)
+        key = task["key"]
+        if key == "seed" and c["seed_mode"] == "folder" or key == "seed_gate":
+            expand_round(runner, job, 0)
+        elif task["kind"] == "agent" and task["params"].get("paper"):
+            runner.jobs.upsert_paper(job["id"], task["params"]["paper"], status="read")
+        elif key.startswith("cite_r"):
+            rounds = (runner.jobs.get_job(job["id"])["inputs"] or {}).get("citation_rounds") or []
+            last = rounds[-1] if rounds else {}
+            if last.get("stop"):
+                expand_report(runner, job, last["stop"])
+            elif not expand_round(runner, job, int(task["params"]["round"]) + 1):
+                expand_report(runner, job, "no further papers could be queued")
+        elif key == "layout_gate":
+            expand_sections(runner, job)
+
+    def on_gate(self, runner, job, task, answer):
+        if is_approval(answer):
+            return "approve"
+        tasks = {t["key"]: t for t in runner.jobs.list_tasks(job["id"])}
+        if task["key"] == "seed_gate":
+            ws = workspace_of(runner, job)
+            drop = re.match(r"^\s*(?:drop|remove)\s+([\d,\s]+)$", answer, re.I)
+            seeds = [p for p in runner.jobs.list_papers(job["id"]) if p["round"] == 0]
+            if drop:
+                for n in {int(x) for x in re.findall(r"\d+", drop.group(1))}:
+                    if 1 <= n <= len(seeds):
+                        runner.jobs.upsert_paper(job["id"], seeds[n - 1]["key"], status="skipped")
+                write_seeds_md(ws, runner.jobs.list_papers(job["id"]))
+            else:
+                for p in seeds:
+                    runner.jobs.upsert_paper(job["id"], p["key"], status="skipped", round=-1)
+                inputs = {**(job.get("inputs") or {}), "seeds": answer, "seed_mode": "query"}
+                runner.jobs.update_job(job["id"], inputs=inputs)
+                runner.jobs.update_task(tasks["seed"]["id"], status="pending", attempts=0)
+            return "revise"
+        if task["key"] == "layout_gate":
+            runner.jobs.add_guidance(tasks["layout"]["id"], f"The user reviewed your outline and asked for changes: "
+                                                            f"\"{answer}\". Revise outline.md accordingly.")
+            runner.jobs.update_task(tasks["layout"]["id"], status="pending", attempts=0)
+        return "revise"
+
+
+DEEP_RESEARCH = register(DeepResearch(
+    name="deep_research",
+    label="Deep research (citation snowballing)",
+    description="Finds starting papers (folder, list, or search), reads each section by section with verified notes, "
+                "follows the most-cited references round by round until citations converge, then writes a report "
+                "with an abstract, literature review, and conclusion.",
+    inputs_schema={
+        "seed_mode": {"enum": ["query", "folder", "list"], "label": "Start from", "default": "query"},
+        "seeds": {"type": "string", "label": "Search query, folder, or list of titles/DOIs", "default": ""},
+        "max_papers": {"type": "string", "label": "Max papers read", "default": "60"},
+        "max_rounds": {"type": "string", "label": "Max citation rounds", "default": "4"},
+        "min_citations": {"type": "string", "label": "Follow works cited by at least", "default": "3"},
+        "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
+    },
+    handlers={"seed": handle_seed, "acquire": handle_acquire, "citations": handle_citations, "compile": handle_compile},
+))

@@ -130,7 +130,8 @@ def _on_task_done(runner, job, task):
     runner.jobs.journal(job["id"], "plan", f"Outline approved: added {len(headings)} section tasks, a summary, and compile.")
 
 
-def compile_report(runner, job, task, title_default: str = "Report", front: list[str] = (), back: list[str] = ()) -> HandlerResult:
+def compile_report(runner, job, task, title_default: str = "Report", front: list[str] = (), back: list[str] = (),
+                   extra_appendix: str = "") -> HandlerResult:
     ws = workspace_of(runner, job)
     inputs = job.get("inputs") or {}
     outline = ws / "outline.md"
@@ -153,7 +154,7 @@ def compile_report(runner, job, task, title_default: str = "Report", front: list
             if n and n["source"] == source:
                 loc = f" ({n['location']})" if n["location"] else ""
                 appendix.append(f"- **[n{i}]**{loc} {n['claim']}: “{n['quote']}”")
-    report = f"# {title}\n\n{body}\n\n" + "\n".join(appendix) + "\n"
+    report = f"# {title}\n\n{body}\n\n" + (extra_appendix.strip() + "\n\n" if extra_appendix else "") + "\n".join(appendix) + "\n"
     out = ws / (inputs.get("output") or "report.md")
     out.write_text(report, encoding="utf-8")
     written = [out.name]

@@ -13,6 +13,7 @@ const JOB_STATUS = {
 };
 const TASK_ICON = { pending: "○", running: "◐", done: "●", failed: "✗", skipped: "–", waiting_user: "?" };
 const PERMISSIONS = [
+  ["net:open-access", "Search open scholarly indexes and download open-access papers (research jobs)"],
   ["cmd:network", "Use the network (downloads, web requests, git clone)"],
   ["cmd:package-install", "Install Python/Node packages into the environment"],
   ["cmd:process-control", "Stop processes"],

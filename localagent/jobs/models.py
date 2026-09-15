@@ -108,6 +108,27 @@ CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
     INSERT INTO notes_fts(notes_fts, rowid, claim, quote, source, tags)
     VALUES ('delete', old.id, old.claim, old.quote, old.source, old.tags);
 END;
+CREATE TABLE IF NOT EXISTS papers(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    year INTEGER,
+    authors TEXT,
+    doi TEXT,
+    openalex_id TEXT,
+    arxiv_id TEXT,
+    oa_pdf_url TEXT,
+    file_path TEXT,
+    round INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    cited_by_read INTEGER NOT NULL DEFAULT 0,
+    meta_references TEXT,
+    extracted_references TEXT,
+    provenance TEXT,
+    created_at REAL NOT NULL,
+    UNIQUE(job_id, key)
+);
 CREATE TABLE IF NOT EXISTS journal(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -356,6 +377,40 @@ class JobStore:
 
     def delete_note(self, job_id: str, note_id: int) -> bool:
         return self.s._exec("DELETE FROM notes WHERE job_id=? AND id=?", (job_id, note_id)).rowcount > 0
+
+    # -- papers (deep research) ----------------------------------------------------------
+    @staticmethod
+    def _paper_out(row: dict | None) -> dict | None:
+        if row is None:
+            return None
+        for k in ("authors", "meta_references", "extracted_references"):
+            row[k] = json.loads(row[k]) if row.get(k) else []
+        row["provenance"] = json.loads(row["provenance"]) if row.get("provenance") else {}
+        return row
+
+    def upsert_paper(self, job_id: str, key: str, **fields) -> dict:
+        json_fields = {"authors", "meta_references", "extracted_references", "provenance"}
+        existing = self.get_paper(job_id, key)
+        values = {k: (json.dumps(v) if k in json_fields else v) for k, v in fields.items()}
+        if existing is None:
+            values.setdefault("title", "(untitled)")
+            cols = ["job_id", "key", "created_at"] + list(values)
+            self.s._exec(f"INSERT INTO papers({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                         (job_id, key, time.time(), *values.values()))
+        elif values:
+            sets = ",".join(f"{k}=?" for k in values)
+            self.s._exec(f"UPDATE papers SET {sets} WHERE job_id=? AND key=?", (*values.values(), job_id, key))
+        return self.get_paper(job_id, key)
+
+    def get_paper(self, job_id: str, key: str) -> dict | None:
+        return self._paper_out(self.s._one("SELECT * FROM papers WHERE job_id=? AND key=?", (job_id, key)))
+
+    def list_papers(self, job_id: str, status: str | None = None) -> list[dict]:
+        if status:
+            rows = self.s._all("SELECT * FROM papers WHERE job_id=? AND status=? ORDER BY id", (job_id, status))
+        else:
+            rows = self.s._all("SELECT * FROM papers WHERE job_id=? ORDER BY round, id", (job_id,))
+        return [self._paper_out(r) for r in rows]
 
     # -- journal -----------------------------------------------------------------
     def journal(self, job_id: str, kind: str, text: str, task_key: str | None = None) -> dict:

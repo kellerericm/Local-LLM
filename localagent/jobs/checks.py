@@ -44,6 +44,8 @@ def describe(check: dict) -> str:
         return f"command `{check.get('command')}` exits with code 0"
     if t == "citations_valid":
         return f"file {check.get('path')} cites at least {check.get('min', 1)} saved notes as [n12], all of which exist"
+    if t == "references_recorded":
+        return "the paper's reference list is recorded with record_references"
     if t == "notes_for_source":
         return f"at least {check.get('min', 1)} note(s) saved from {check.get('source')}, or the summary says it's not relevant"
     return json.dumps(check)
@@ -51,10 +53,21 @@ def describe(check: dict) -> str:
 
 def run_checks(checks: list[dict], workspace: Path, env_path: Path, guard, policy,
                ask: Callable[[list[str], str, str], bool], cancel: threading.Event | None = None,
-               notes: Callable[[], list[dict]] | None = None, summary: str = "") -> list[CheckResult]:
+               notes: Callable[[], list[dict]] | None = None, summary: str = "",
+               paper: Callable[[str], dict | None] | None = None) -> list[CheckResult]:
     results = []
     for c in checks:
         try:
+            if c.get("type") == "references_recorded":
+                p = paper(c["paper"]) if paper else None
+                n = len(p["extracted_references"]) + len(p["meta_references"]) if p else 0
+                declared = bool(p and (p.get("provenance") or {}).get("references_recorded"))
+                results.append(CheckResult(c, n > 0 or declared,
+                                           f"{n} references known" if n else
+                                           "recorded as having no reference list" if declared else
+                                           "no references recorded; call record_references with the paper's reference "
+                                           "list (an empty list if it has none)"))
+                continue
             if c.get("type") in ("citations_valid", "notes_for_source"):
                 results.append(_notes_check(c, workspace, guard, notes() if notes else [], summary))
                 continue

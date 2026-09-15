@@ -111,6 +111,40 @@ def search_notes(ctx: ToolContext, query: str = "", source: str = "", limit: int
                                 f"{n['claim']} — \"{n['quote'][:300]}\"" for n in notes))
 
 
+def record_references(ctx: ToolContext, references: list[dict], paper: str = "") -> ToolResult:
+    from .scholar import work_key
+
+    conv = ctx.conversation
+    key = paper or (getattr(conv, "task", None) or {}).get("params", {}).get("paper")
+    if not key or not conv.jobs.get_paper(conv.job["id"], key):
+        return ToolResult("Unknown paper. This tool is for deep-research reading tasks; pass the paper key from "
+                          "your task if asked.", ok=False)
+    cleaned, seen = [], set()
+    for r in references:
+        title = str(r.get("title") or "").strip()
+        if not title and not r.get("doi") and not r.get("arxiv"):
+            continue
+        year = r.get("year")
+        try:
+            year = int(str(year)[:4]) if year else None
+        except ValueError:
+            year = None
+        doi = str(r.get("doi") or "").strip().lower().removeprefix("https://doi.org/") or None
+        arxiv = str(r.get("arxiv") or "").strip() or None
+        k = work_key(None, doi, arxiv, title, year)
+        if k in seen:
+            continue
+        seen.add(k)
+        cleaned.append({"key": k, "title": title, "year": year, "doi": doi, "arxiv": arxiv,
+                        "first_author": str(r.get("first_author") or "").strip() or None})
+    existing = conv.jobs.get_paper(conv.job["id"], key)
+    conv.jobs.upsert_paper(conv.job["id"], key, extracted_references=cleaned,
+                           provenance={**(existing.get("provenance") or {}), "references_recorded": True})
+    if not cleaned:
+        return ToolResult("Recorded that this paper has no readable reference list.")
+    return ToolResult(f"Recorded {len(cleaned)} references for this paper.")
+
+
 def job_ask_user(ctx: ToolContext, question: str) -> ToolResult:
     ctx.conversation.result = {"kind": "ask", "question": question.strip()}
     return ToolResult("Your question was sent to the user. This task will wait for the answer; other tasks continue.",
@@ -204,6 +238,18 @@ SEARCH_NOTES = Tool(
         "query": {"type": "string"}, "source": {"type": "string"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50}}},
     search_notes, "job")
+
+RECORD_REFERENCES = Tool(
+    "record_references",
+    "Record the reference list of the paper you're reading (deep research). Include every entry you can read: title, "
+    "first author, year, and DOI or arXiv id when shown. Used to follow citations to the next papers.",
+    {"type": "object", "properties": {
+        "references": {"type": "array", "items": {"type": "object", "properties": {
+            "title": {"type": "string"}, "first_author": {"type": "string"}, "year": {"type": ["integer", "string"]},
+            "doi": {"type": "string"}, "arxiv": {"type": "string"}}}},
+        "paper": {"type": "string", "description": "paper key; defaults to your task's paper"}},
+     "required": ["references"]},
+    record_references, "job")
 
 JOB_ASK_USER = Tool(
     "ask_user",

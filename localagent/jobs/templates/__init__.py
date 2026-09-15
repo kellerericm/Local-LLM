@@ -12,20 +12,19 @@ def register(template: Template) -> Template:
 
 
 def get_template(name: str | None) -> Template:
-    if not _REGISTRY:
-        _load()
+    _load()
     return _REGISTRY.get(name or "generic", _REGISTRY["generic"])
 
 
 def list_templates() -> list[dict]:
-    if not _REGISTRY:
-        _load()
+    _load()
     return [{"name": t.name, "label": t.label, "description": t.description, "inputs": t.inputs_schema}
             for t in _REGISTRY.values()]
 
 
 def _load() -> None:
-    from . import generic, research_report  # noqa: F401  (modules register themselves)
+    # Importing is idempotent; modules register themselves. Importing one template directly must not hide the others.
+    from . import deep_research, generic, research_report  # noqa: F401
 
 
 __all__ = ["HandlerResult", "Template", "get_template", "list_templates", "register"]

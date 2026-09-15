@@ -558,7 +558,8 @@ class JobRunner:
         approver = JobApprover(self.approvals, self, job, task["id"])
         ask = lambda keys, summary_, detail: approver.request(None, project["id"], keys, summary_, detail)  # noqa: E731
         return run_checks(task["checks"], workspace, env_path, guard, self.coordinator.policy, ask,
-                          notes=lambda: self.jobs.list_notes(job["id"]), summary=summary)
+                          notes=lambda: self.jobs.list_notes(job["id"]), summary=summary,
+                          paper=lambda key: self.jobs.get_paper(job["id"], key))
 
     # -- templates: code tasks, gates, reviews, plan growth ---------------------------------------
     def _task_done_hook(self, job: dict, task: dict) -> None:

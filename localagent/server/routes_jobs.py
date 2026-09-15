@@ -9,7 +9,7 @@ from ..jobs.planner import lint_plan, normalize_plan
 from ..jobs.scratchpad import CONTEXT_CHAR_LIMIT, ITEM_CHAR_LIMIT, context_chars
 from ..jobs.templates import list_templates
 
-ALLOWED_PERMISSIONS = {"cmd:network", "cmd:package-install", "cmd:process-control"}
+ALLOWED_PERMISSIONS = {"cmd:network", "cmd:package-install", "cmd:process-control", "net:open-access"}
 
 
 class JobIn(BaseModel):

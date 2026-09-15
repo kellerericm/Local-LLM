@@ -324,3 +324,23 @@ def test_citation_ties_prefer_widely_cited_works_and_graph_shows_titles(env_fact
     graph = (workspace / "citation_graph.md").read_text(encoding="utf-8")
     assert "| 2 | Foundation Two | 2001 | 900 | queued |" in graph and "| 2 | Foundation One | 1998 | 10 | not read |" in graph
     assert "oa:W" not in graph
+
+
+def test_literature_digest_fits_budget_with_many_papers(tmp_path):
+    from localagent.jobs.templates.deep_research import DIGEST_CHARS, build_digest, paper_md
+    papers = []
+    for i in range(60):
+        key = f"oa:W{i}"
+        md = tmp_path / paper_md(key)
+        md.parent.mkdir(parents=True, exist_ok=True)
+        claims = "\n".join(f"- Claim {j} of paper {i} about replay and planning in detail. [n{i * 30 + j}]" for j in range(25))
+        md.write_text(f"# P{i}\n## Section summaries\n{'x ' * 5000}\n## Key claims\n{claims}\n"
+                      f"## Value of this paper\n{'Valuable because of careful methods. ' * 80}\n", encoding="utf-8")
+        papers.append({"key": key, "title": f"Paper {i}", "year": 2000 + i % 20, "status": "read", "round": i % 3,
+                       "cited_by_read": 60 - i})
+    papers.append({"key": "oa:Wskip", "title": "Skipped", "year": 1999, "status": "skipped", "round": 0, "cited_by_read": 9})
+    text = build_digest(tmp_path, papers)
+    assert len(text) <= DIGEST_CHARS * 1.1
+    assert text.count("### Paper ") == 60 and "Skipped" not in text
+    assert text.index("### Paper 0 ") < text.index("### Paper 59 ")          # most-cited first
+    assert "[n0]" in text and "x x x" not in text                              # claims kept, section summaries left out

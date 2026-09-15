@@ -137,7 +137,8 @@ def compile_report(runner, job, task, title_default: str = "Report", front: list
     outline = ws / "outline.md"
     title_match = re.search(r"^#\s+(.+)$", outline.read_text(encoding="utf-8"), re.M) if outline.exists() else None
     title = title_match.group(1).strip() if title_match else title_default
-    section_files = sorted((ws / "sections").glob("*.md")) if (ws / "sections").exists() else []
+    section_files = sorted(p for p in (ws / "sections").glob("*.md") if not p.name.startswith("_")) \
+        if (ws / "sections").exists() else []                                  # _digest.md etc. are working files
     if not section_files:
         return HandlerResult(False, "No section files found in sections/")
     ordered = [ws / f for f in front if (ws / f).exists()] + \

@@ -153,6 +153,10 @@ def main():
         job_id, usage = con.execute("select id, usage from jobs order by created_at desc limit 1").fetchone()
         con.close()
         c.patch(f"/api/jobs/{job_id}", json={"budget": budget})
+        for t in c.get(f"/api/jobs/{job_id}").json()["tasks"]:
+            if t["status"] == "failed":
+                c.post(f"/api/jobs/{job_id}/tasks/{t['id']}/retry")
+                note("retrying failed task", task=t["key"])
         r = c.post(f"/api/jobs/{job_id}/resume")
         note("resumed job", job_id=job_id, usage_before=usage, status_code=r.status_code, response=r.text[:200])
     else:

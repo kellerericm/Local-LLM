@@ -59,6 +59,20 @@ A failure is information, not a verdict.
   - **Fixes:**
     - A rejected quote is no longer a tool failure (ok=True, "Note NOT saved"). After 3 rejections in a task the message says notes are optional and to finish.
     - Saves say "verified in <part>; recorded for the paper <source>".
+- **Rerun 8, 2026-09-15 10:24–13:49: the literature search worked end to end; the report layout failed 3 attempts.**
+  - **Worked:**
+    - Every part, write-up, and review of 4 papers passed on the first attempt, with 105 notes, all verbatim.
+    - Round 1 followed the citations. The top of the graph became the field's foundational works (O'Keefe & Nadel 1978, Foster & Knierim 2006, Lee & Wilson 2002, Diba & Buzsáki 2007, Wilson & McNaughton 1994).
+    - The run paused once at the harness's 1.5 h budget and continued via the new `--resume`.
+  - **Layout failed:** attempts ended in step_limit, then needs_help twice (a malformed call, then re-reading outline.md and citing note ids it couldn't see).
+    - **Cause:** the instructions said to read citation_graph.md plus every papers/*.md write-up. Four write-ups of about 22 KB each overflow the 20k-token context, the same failure class as the per-paper and write-up tasks.
+    - **Fixes:**
+      - A code task builds `literature_digest.md`: the most-cited works, plus each paper's value assessment and key claims with note ids, capped at 24k characters in total (entries thin out as papers are added).
+      - Layout and section tasks read the digest and use search_notes(brief) for detail.
+      - A code-built `sections/_digest.md` feeds the abstract.
+      - Compile ignores `_*.md` working files.
+  - To finish this run on the fix, the harness built the digest offline, updated the stored layout instructions, moved the failed outline to `outline_failed_attempts.md`, and retried the task (noted in the job journal).
+  - Still open: OpenAlex has duplicate records (*The Hippocampus as a Cognitive Map* 1978 and 1979), and the graph doesn't merge them by title.
 
 ## 2026-09-14 — Phase 3a E2E run 1: job runner blocked on an unanswered approval
 - **Run:** `python -m bench.probes.job_e2e` (generic job on sandbox/tune_me, server killed mid-task and restarted)

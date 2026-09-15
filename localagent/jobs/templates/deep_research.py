@@ -51,7 +51,9 @@ REFS_KNOWN = "The reference list is already known from the scholarly index; skip
 PART_CHARS = 12_000
 
 LAYOUT = """Plan the report answering: {question}
-Read citation_graph.md (the most-cited works) and the paper summaries in papers/*.md, and use search_notes. Write outline.md:
+Read literature_digest.md (every paper read: its value and key claims with note ids, plus the most-cited works). It
+is built to fit your context; don't open the full papers/*.md write-ups. Only cite note ids that appear in the digest.
+Write outline.md once:
 - '# <report title>'
 - '## Abstract' (a placeholder line; it's written last)
 - '## Introduction and scope'
@@ -60,13 +62,19 @@ Read citation_graph.md (the most-cited works) and the paper summaries in papers/
 - '## Synthesis: agreements, conflicts, and gaps', citing notes on both sides of each disagreement
 - '## Conclusion and summary'"""
 
-SECTION = """Write the report section "{heading}" to {path}, following its part of outline.md (including any '###' \
-subsections). Start the file with '## {heading}'. Use the paper summaries in papers/*.md and search_notes; support \
-every factual claim with note citations like [n12]. Present disagreements between papers as disagreements."""
+SECTION = """Write the report section "{heading}" to {path}, following its part of outline.md (including any '###'
+subsections). Start the file with '## {heading}'. Read outline.md and literature_digest.md; for more detail on a point,
+call search_notes with a few keywords (brief true) instead of opening the full papers/*.md write-ups. Support every
+factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write the file
+once, then call complete_task (its checks run automatically)."""
 
-ABSTRACT = """Read all section files in sections/ and write sections/00-abstract.md: '## Abstract', then 150-250 words \
-covering the question, the scope of the literature (how many papers, how they were selected by citation), the main \
-findings, the key disagreements, and the conclusion. Cite the most important notes like [n12]."""
+ABSTRACT = """Read sections/_digest.md (the opening and key points of every section, built to fit your context) and write
+sections/00-abstract.md: '## Abstract', then 150-250 words covering the question, the scope of the literature (how many
+papers, how they were selected by citation), the main findings, the key disagreements, and the conclusion. Cite the most
+important notes like [n12], using only note ids that appear in the digest. Then call complete_task."""
+
+DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with room for the task and the answer
+SECTION_DIGEST_CHARS = 16_000
 
 
 def cfg(job: dict) -> dict:
@@ -265,7 +273,10 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
 
 def expand_report(runner, job, reason: str) -> None:
     runner.jobs.append_tasks(job["id"], [
+        {"key": "digest", "title": "Build the literature digest", "kind": "code", "handler": "digest",
+         "instructions": "-", "done_when": "literature_digest.md exists"},
         {"key": "layout", "title": "Plan the report layout", "instructions": LAYOUT.format(question=job["goal"]),
+         "depends_on": ["digest"],
          "done_when": "outline.md has abstract, introduction, literature review, foundational works, synthesis, "
                       "and conclusion sections", "review": True,
          "checks": [{"type": "file_contains", "path": "outline.md", "text": "## Abstract"},
@@ -293,13 +304,77 @@ def expand_sections(runner, job) -> None:
                       "done_when": f"{path} exists, starts with the heading, and cites valid notes",
                       "checks": [{"type": "file_contains", "path": path, "text": f"## {heading}"},
                                  {"type": "citations_valid", "path": path}]})
+    tasks.append({"key": "section_digest", "parent_key": "write", "title": "Build the section digest", "kind": "code",
+                  "handler": "section_digest", "depends_on": keys, "instructions": "-",
+                  "done_when": "sections/_digest.md exists"})
     tasks.append({"key": "abstract", "parent_key": "write", "title": "Write the abstract", "instructions": ABSTRACT,
-                  "depends_on": keys, "review": True, "done_when": "sections/00-abstract.md exists with a cited abstract",
+                  "depends_on": ["section_digest"], "review": True, "done_when": "sections/00-abstract.md exists with a cited abstract",
                   "checks": [{"type": "file_contains", "path": "sections/00-abstract.md", "text": "## Abstract"},
                              {"type": "citations_valid", "path": "sections/00-abstract.md"}]})
     tasks.append({"key": "compile", "title": "Compile the report", "kind": "code", "handler": "compile",
                   "depends_on": ["write"], "instructions": "-", "done_when": "report exists"})
     runner.jobs.append_tasks(job["id"], tasks)
+
+
+def _md_section(text: str, heading: str) -> str:
+    m = re.search(rf"^##\s+{re.escape(heading)}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S | re.I)
+    return m.group(1).strip() if m else ""
+
+
+def build_digest(ws: Path, papers: list[dict], budget: int = DIGEST_CHARS) -> str:
+    """Compact view of the literature for report planning: per paper, its value assessment and key claims (with note
+    ids), capped so the whole file fits a small model's context however many papers were read."""
+    read = sorted((p for p in papers if p["status"] == "read"), key=lambda p: (-p["cited_by_read"], p["round"]))
+    head = ["# Literature digest", "", f"{len(read)} papers read. Cite notes by their ids, like [n12].", ""]
+    graph = ws / "citation_graph.md"
+    if graph.is_file():
+        rows = [l for l in graph.read_text(encoding="utf-8").splitlines() if l.startswith("| ") and "---" not in l][:13]
+        head += ["## Most-cited works (from citation_graph.md)", ""] + rows + [""]
+    # Entries thin out as papers are added (at 60 papers: title, a sentence of value, a claim or two).
+    per = max(250, (budget - len("\n".join(head))) // max(1, len(read)))
+    out = head + ["## Papers read", ""]
+    for p in read:
+        md = ws / paper_md(p["key"])
+        text = md.read_text(encoding="utf-8", errors="replace") if md.is_file() else ""
+        cited = f", cited by {p['cited_by_read']} of the papers read" if p["cited_by_read"] else ""
+        entry = [f"### {p['title']} ({p['year'] or 'n.d.'}{cited})", f"Write-up: {paper_md(p['key'])}"]
+        value = re.sub(r"\s+", " ", _md_section(text, "Value of this paper"))
+        if value:
+            room = per - sum(len(l) + 1 for l in entry)
+            cut = value[:max(80, int(room * 0.45))]
+            entry.append("Value: " + (cut if len(cut) == len(value) else cut.rsplit(" ", 1)[0] + " …"))
+        room = per - sum(len(l) + 1 for l in entry)
+        for line in _md_section(text, "Key claims").splitlines():
+            line = line.strip()
+            if not line.startswith(("-", "*")):
+                continue
+            if len(line) + 1 > room:
+                break
+            entry.append(line)
+            room -= len(line) + 1
+        out += entry + [""]
+    return "\n".join(out).strip() + "\n"
+
+
+def handle_digest(runner, job, task) -> HandlerResult:
+    ws = workspace_of(runner, job)
+    papers = runner.jobs.list_papers(job["id"])
+    text = build_digest(ws, papers)
+    (ws / "literature_digest.md").write_text(text, encoding="utf-8")
+    n = sum(1 for p in papers if p["status"] == "read")
+    return HandlerResult(True, f"Wrote literature_digest.md ({n} papers, {len(text):,} characters).")
+
+
+def handle_section_digest(runner, job, task) -> HandlerResult:
+    ws = workspace_of(runner, job)
+    files = sorted(f for f in (ws / "sections").glob("*.md") if not f.name.startswith(("_", "00-")))
+    per = max(600, SECTION_DIGEST_CHARS // max(1, len(files)))
+    out = ["# Section digest", ""]
+    for f in files:
+        text = f.read_text(encoding="utf-8", errors="replace").strip()
+        out += [text[:per].rsplit("\n", 1)[0] if len(text) > per else text, ""]
+    (ws / "sections" / "_digest.md").write_text("\n".join(out), encoding="utf-8")
+    return HandlerResult(True, f"Wrote sections/_digest.md from {len(files)} sections.")
 
 
 # ---------------------------------------------------------------- handlers
@@ -607,5 +682,6 @@ DEEP_RESEARCH = register(DeepResearch(
                       "default": "12"},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },
-    handlers={"seed": handle_seed, "acquire": handle_acquire, "citations": handle_citations, "compile": handle_compile},
+    handlers={"seed": handle_seed, "acquire": handle_acquire, "citations": handle_citations, "digest": handle_digest,
+              "section_digest": handle_section_digest, "compile": handle_compile},
 ))

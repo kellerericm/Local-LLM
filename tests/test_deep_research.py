@@ -309,3 +309,18 @@ def test_no_papers_read_asks_before_writing_an_empty_report(env_factory, workspa
     assert task_by_key(env, job, "layout") is None
     env.runner.answer(job["id"], "continue", task_by_key(env, job, "cite_r0")["id"])
     assert tick_until(env, job["id"], lambda: task_by_key(env, job, "layout") is not None)
+
+
+def test_citation_ties_prefer_widely_cited_works_and_graph_shows_titles(env_factory, workspace):
+    fake = FakeScholar(workspace)
+    fake.works["WF1"].cited_by_count, fake.works["WF2"].cited_by_count = 10, 900   # both cited by A and B
+    env = env_factory(read_paper_responses(2))
+    env.runner.scholar = fake
+    job = start_query_job(env, per_round="1", max_rounds="2")
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "a0_3")["status"] == "waiting_user")
+    env.runner.answer(job["id"], "skip", task_by_key(env, job, "a0_3")["id"])
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "cite_r0")["status"] == "done")
+    assert [p["title"] for p in env.jobs.list_papers(job["id"]) if p["round"] == 1] == ["Foundation Two"]
+    graph = (workspace / "citation_graph.md").read_text(encoding="utf-8")
+    assert "| 2 | Foundation Two | 2001 | 900 | queued |" in graph and "| 2 | Foundation One | 1998 | 10 | not read |" in graph
+    assert "oa:W" not in graph

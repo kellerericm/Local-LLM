@@ -447,19 +447,26 @@ def handle_citations(runner, job, task) -> HandlerResult:
         reason = f"reached the {c['max_rounds']}-round limit"
     elif not candidates:
         reason = f"converged: no unread work is cited by {threshold} or more of the {len(read)} papers read"
-    _write_graph(ws, counts, info, papers, threshold)
     rounds = (job.get("inputs") or {}).get("citation_rounds") or []
     entry = {"round": round_, "read": len(read), "threshold": threshold, "candidates": len(candidates)}
+    by_id: dict[str, Work] = {}
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:GRAPH_ROWS]
+    lookup = [k[3:] for k, _ in ([] if reason else candidates[:50]) + top if k.startswith("oa:") and k not in known]
+    title_lookups = not reason and any(k.startswith(("doi:", "t:")) for k, _ in candidates[:c["per_round"]])
+    if lookup or title_lookups:
+        require_network(runner, job, task, f"Look up cited papers for round {round_ + 1}")
+    if lookup:
+        try:
+            by_id = {f"oa:{w.openalex_id}": w for w in scholar(runner).get_by_ids(list(dict.fromkeys(lookup)))}
+        except Exception as e:
+            runner.jobs.journal(job["id"], "citations", f"Couldn't look up cited works: {e}", task["key"])
+    # Ties are common (every work cited by both of two papers): prefer works cited more widely overall.
+    candidates.sort(key=lambda kv: (-kv[1], -((by_id.get(kv[0]) and by_id[kv[0]].cited_by_count) or 0)))
     if reason:
         entry["stop"] = reason
     else:
         take = candidates[:min(c["per_round"], c["max_papers"] - len(read))]
-        needs_net = any(k.startswith(("oa:", "doi:", "t:")) for k, _ in take)
-        if needs_net:
-            require_network(runner, job, task, f"Look up {len(take)} cited paper(s) for round {round_ + 1}")
         client = scholar(runner)
-        oa_ids = [k[3:] for k, _ in take if k.startswith("oa:")]
-        by_id = {f"oa:{w.openalex_id}": w for w in (client.get_by_ids(oa_ids) if oa_ids else [])}
         added = 0
         for k, n in take:
             meta = info.get(k, {})
@@ -478,6 +485,9 @@ def handle_citations(runner, job, task) -> HandlerResult:
                                      cited_by_read=n)
             added += 1
         entry["selected"] = added
+    titles = {k: {"title": w.title, "year": w.year, "cited_by_count": w.cited_by_count} for k, w in by_id.items()}
+    merged = {k: {**info.get(k, {}), **titles.get(k, {})} for k in set(info) | set(titles)}
+    _write_graph(ws, counts, merged, runner.jobs.list_papers(job["id"]), threshold)
     rounds.append(entry)
     runner.jobs.update_job(job["id"], inputs={**(job.get("inputs") or {}), "citation_rounds": rounds})
     if reason:
@@ -486,14 +496,21 @@ def handle_citations(runner, job, task) -> HandlerResult:
                                f"reading the top {entry['selected']} next. See citation_graph.md.")
 
 
+GRAPH_ROWS = 40
+
+
 def _write_graph(ws: Path, counts, info, papers, threshold) -> None:
     by_key = {p["key"]: p for p in papers}
-    lines = ["# Citation graph", "", f"Works cited by the papers read so far (threshold for following: {threshold}).", "",
-             "| Cited by | Work | Status |", "|---|---|---|"]
-    for k, n in sorted(counts.items(), key=lambda kv: -kv[1])[:40]:
-        p = by_key.get(k)
-        title = (p and p["title"]) or info.get(k, {}).get("title") or k
-        lines.append(f"| {n} | {title} | {(p and p['status']) or 'not read'} |")
+    lines = ["# Citation graph", "", f"Works cited by the papers read so far (threshold for following: {threshold}). "
+             "Ties are ordered by total citations.", "",
+             "| Cited by (papers read) | Work | Year | Total citations | Status |", "|---|---|---|---|---|"]
+    rows = sorted(counts.items(), key=lambda kv: (-kv[1], -(info.get(kv[0], {}).get("cited_by_count") or 0)))
+    for k, n in rows[:GRAPH_ROWS]:
+        p, meta = by_key.get(k), info.get(k, {})
+        title = (p and p["title"]) or meta.get("title") or k
+        year = (p and p["year"]) or meta.get("year") or ""
+        total = meta.get("cited_by_count")
+        lines.append(f"| {n} | {title} | {year} | {total if total is not None else ''} | {(p and p['status']) or 'not read'} |")
     (ws / "citation_graph.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

@@ -30,7 +30,8 @@ PARAM_DOCS = {
                           "structured output.",
     "max_new_tokens": "Longest single reply, including its thinking. If replies stop mid-thought, raise it.",
     "context_tokens": "How much conversation the model sees at once. Bigger remembers more of a long task but "
-                      "uses more GPU memory and is slower.",
+                      "uses more GPU memory. Keep it where the model still fits in GPU memory: past that point Windows "
+                      "quietly borrows system RAM and replies get about 10× slower.",
     "quantization": "Compresses the model to fit in GPU memory. 4-bit: smallest, a little less accurate. "
                     "8-bit: in between. none: most accurate, needs far more memory.",
     "offload": "If the model doesn't fit in the VRAM limit, Auto puts the overflow in system RAM. That part runs "
@@ -57,6 +58,9 @@ PROFILES = [
         "match": r"qwen3\.[5-9]",
         "family": "Qwen3.5 / Qwen3.6+",
         "context_max": 262144,
+        "context_note": "Measured on a 16 GB RTX 4060 Ti with the 9B model at 4-bit: up to ~22,000 tokens is fast "
+                        "(13 GB peak); 26,000 tokens was 11× slower as memory spilled to system RAM. 20,000 is a safe "
+                        "default; more is fine on bigger GPUs.",
         "default_preset": "thinking_coding",
         "source": "https://huggingface.co/Qwen/Qwen3.5-9B",
         "presets": {

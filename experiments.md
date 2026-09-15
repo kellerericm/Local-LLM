@@ -9,6 +9,26 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-14 — Speed vs prompt length (Qwen3.5-9B, 4-bit, RTX 4060 Ti 16 GB)
+- **Question:** Why did a long-context job step take 15+ minutes?
+- **Setup:** `python -m bench.probes.context_speed`; thinking off; 32–64 new tokens; model fully on GPU (7.2 GB of weights).
+- **Results:**
+
+  | Prompt tokens | Time to first token | Decode tok/s | Peak VRAM |
+  |---|---|---|---|
+  | 1,023 | 1.3 s | 18.2 | 7.7 GB |
+  | 4,023 | 2.5 s | 18.6 | 8.5 GB |
+  | 8,023 | 4.9 s | 16.1 | 9.5 GB |
+  | 16,023 | 10.1 s | 19.3 | 11.7 GB |
+  | 22,023 | 15.6 s | 20.1 | 13.3 GB |
+  | **26,023** | **176.2 s** | 18.5 | 14.3 GB |
+  | 30,023 | 315.4 s | 17.2 | 15.4 GB |
+
+- **Conclusion:**
+  - The attention fallback kernels are not the bottleneck: prefill scales roughly linearly and decode is flat.
+  - Once peak memory passes what's left of the 16 GB card (~14 GB), the Windows driver spills to system RAM and prefill becomes ~11× slower.
+  - Default context window set to 20,000 tokens.
+
 ## 2026-09-14 — Phase 3a end-to-end: generic job on sandbox/lake_veyra (Qwen3.5-9B)
 - **Question:** Does a generic job suited to plan-following (document report) complete with the real model and survive a mid-task kill?
 - **Setup:**

@@ -18,7 +18,21 @@ Qwen3.5-9B ships as bf16 (~18 GB) and is quantized to 4-bit on every load. That 
 - Is output identical? Spot-check against the bf16 load and rerun the benchmark.
 - Where does the copy go, and how does the (future) model manager treat it: as a variant of the original model, or as its own entry?
 
-## Long-context steps are extremely slow (priority)
+## Long-context steps are extremely slow — cause found (2026-09-14)
+**Answer:** VRAM overflow into Windows shared system memory, not the attention kernels.
+- Prefill peak memory grows ~0.26 GB per 1k prompt tokens.
+- Up to 22k tokens: fast (TTFT 15.6 s, 13.3 GB). At 26k tokens: 14.3 GB and TTFT 176 s (11× slower); 30k: 315 s.
+- Decode speed stays ~18 tok/s throughout (`bench/probes/context_speed.py`, experiments.md).
+
+**Done:** default context window lowered to 20,000; Settings explains the limit; cookbook troubleshooting entry.
+
+**Still open:**
+- An automatic guard: estimate prompt memory before generating and shrink the context (or warn) based on free VRAM, instead of a fixed number.
+- Chunked prefill, to lower the peak and allow longer contexts on 16 GB.
+- Existing user settings saved with 32768 keep that value; surface a warning when the saved value exceeds the model's measured safe limit.
+
+### Original question
+In the Lake Veyra job run, a task whose prompt held a whole report plus sources took 64 minutes for 7 steps.
 In the Lake Veyra job run, a task whose prompt held a whole report plus sources took 64 minutes for 7 steps; one generation took over 15 minutes. Short-context steps take 20–40 s. Research jobs routinely have long contexts, so this blocks practical deep research.
 - **Measure:** time to first token and tokens/s vs prompt length (2k, 8k, 16k, 32k) for Qwen3.5-9B 4-bit, with the model's GPU/CPU placement logged.
 - **Suspects:** (a) the reference PyTorch implementation of the gated-delta-rule layers (below); (b) KV cache growth pushing the model partly onto CPU under the 14 GB VRAM cap; (c) the reasoning budget not bounding total output.

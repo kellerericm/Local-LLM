@@ -37,7 +37,7 @@ class Settings:
     preset: str = "thinking_coding"          # see backend/model_profiles.py; "custom" = hand-tuned
     thinking: bool = True
     thinking_budget: int = 0                 # max reasoning tokens per reply; 0 = no limit
-    context_tokens: int = 32768
+    context_tokens: int = 20000            # 16 GB GPU + Qwen3.5-9B 4-bit: >~22k overflows VRAM (experiments.md)
     max_new_tokens: int = 4096
     temperature: float = 0.6
     top_p: float = 0.95

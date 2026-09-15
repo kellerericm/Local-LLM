@@ -87,5 +87,6 @@ To compare, pick a model from a **different family** (e.g. a small Gemma or Llam
 | "Failed to load model" with out-of-memory | Lower **VRAM limit** in Settings, choose `4bit`, or a smaller model. Close GPU-heavy apps. |
 | Status says "Paused: GPU busy" and never resumes | Another app is using the GPU. Close it, or raise the thresholds or turn off pausing in Settings → Resources. |
 | Replies are very slow | 4-bit bitsandbytes trades speed for memory. Try a smaller model, or turn thinking off in Settings. |
+| Replies are fast in short chats but crawl in long chats or long jobs | GPU memory is running out and Windows is quietly using system RAM, about 10× slower. Lower **Context window** in Settings (20,000 is safe for the default model on a 16 GB GPU) and close GPU-heavy apps. Optional: in **NVIDIA Control Panel → Manage 3D settings → CUDA – Sysmem Fallback Policy**, choose **Prefer No Sysmem Fallback**. Then running out of memory shows an error instead of silently slowing down. |
 | Port 8765 already in use | `python -m localagent --port 8780` |
 | Page loads but nothing updates | Refresh. The page reconnects automatically if the server restarted. |

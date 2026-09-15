@@ -725,7 +725,8 @@ async function settingsDialog() {
   const contextHint = h("div", { class: "hint" });
   const familyLine = h("div", { class: "hint" });
   const showProfile = () => {
-    contextHint.textContent = `${profile.docs.context_tokens} This model supports up to ${fmtTokens(profile.context_max)}.`;
+    contextHint.textContent = `${profile.docs.context_tokens} This model supports up to ${fmtTokens(profile.context_max)}.` +
+      (profile.context_note ? ` ${profile.context_note}` : "");
     familyLine.replaceChildren(`Recognized as: ${profile.family}. `,
       profile.source ? h("a", { href: profile.source, target: "_blank", rel: "noopener" }, "Model card") : "");
   };

@@ -25,6 +25,38 @@ _CONCRETE = re.compile(r"\.\w{1,5}\b|\b\d+\b|\bexists?\b|\bcontains?\b|\bexit\b|
                        r"\btests?\b|\bwritten to\b|\bsaved (to|in|as)\b|\blists?\b|\btable\b|\bsection\b", re.IGNORECASE)
 
 
+_TARGET = re.compile(r"\b(below|under|above|at least|at most|less than|greater than|lower than|higher than|better than|"
+                     r"improv\w*|exceeds?|beats?)\b|[<>]=?\s*-?\d", re.IGNORECASE)
+_FAILURE_LOGIC = re.compile(r"assert|exit\s+1|sys\.exit|throw|raise|-lt\b|-gt\b|-le\b|-ge\b|\bif\b|pytest|unittest|"
+                            r"select-string|findstr|test\b", re.IGNORECASE)
+_RECORDED_IN = re.compile(r"\b(?:logged|recorded|written|documented|noted|saved)\b[^.]*?\b(?:in|to)\s+([\w./\\-]+\.\w{1,5})",
+                          re.IGNORECASE)
+
+
+def _cant_fail_problems(task: dict) -> list[str]:
+    """Checks that pass no matter what happened (E2E run 2: `python evaluate.py` exits 0 even when the score got
+    worse, so 'score below 1.0' was never actually checked)."""
+    problems = []
+    dw = task["done_when"]
+    commands = [c for c in task["checks"] if isinstance(c, dict) and c.get("type") == "command_ok" and c.get("command")]
+    if _TARGET.search(dw) and commands and not any(_FAILURE_LOGIC.search(c["command"]) for c in commands) \
+            and not any(isinstance(c, dict) and c.get("type") == "file_contains" for c in task["checks"]):
+        problems.append(
+            f"Task {task['key']} ('{task['title']}'): done_when sets a target (\"{dw}\") but its command_ok check only "
+            "tests the exit code, which succeeds even when the target is missed. Use a command that fails unless the "
+            "target is met, e.g. python -c \"import subprocess,re; out=subprocess.run(['python','evaluate.py'],"
+            "capture_output=True,text=True).stdout; assert float(re.search(r'score: ([\\d.]+)', out).group(1)) < 1.0\".")
+    m = _RECORDED_IN.search(dw)
+    if m and task["checks"]:
+        target = m.group(1).replace("\\", "/").lower()
+        verified = any(isinstance(c, dict) and c.get("type") in ("file_contains", "file_exists")
+                       and str(c.get("path", "")).replace("\\", "/").lower().endswith(target) for c in task["checks"])
+        if not verified:
+            problems.append(f"Task {task['key']} ('{task['title']}'): done_when says the result is recorded in {m.group(1)}, "
+                            f"but no check looks at {m.group(1)}. Add a file_contains check for what should be written there.")
+    return problems
+
+
 def normalize_plan(raw_tasks: list[dict]) -> list[dict]:
     """Map the propose_plan tool's fields to stored task fields."""
     out = []
@@ -106,6 +138,7 @@ def lint_plan(tasks: list[dict], policy=None, guard=None) -> list[str]:
                           "exist, something it will contain, a number, or a command that will succeed.")
         if not t["instructions"]:
             errors.append(f"Task {t['key']} ('{t['title']}'): missing instructions.")
+        errors.extend(_cant_fail_problems(t))
 
     # dependencies
     leaf_keys = {t["key"] for t in leaf_list}

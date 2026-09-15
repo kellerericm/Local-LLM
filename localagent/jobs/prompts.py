@@ -41,7 +41,11 @@ TASK_BLOCK = """
 {checks}
 {guidance}
 ## How to work on a job task
-- Do only this task. Other tasks run separately, in their own sessions.
+- Do only this task. Other tasks run separately, in their own sessions. Don't start work that belongs to later
+  tasks in the plan (such as their experiments or sections), even if you have steps left. Finish, verify, and call
+  complete_task.
+- Don't record guesses as facts in the context. Write what you measured or read, and say how you know
+  (e.g. "RMSE 3.01, from python evaluate.py").
 - Start from the scratchpad. If your checklist already has ticked items, an earlier attempt did them: verify
   quickly and continue from the first unticked item instead of starting over.
 - For anything with more than one step, write your checklist first (update_checklist) and tick items off as soon as

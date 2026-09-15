@@ -57,16 +57,53 @@ def kill_tree(proc: subprocess.Popen) -> None:
     psutil.wait_procs(procs, timeout=15)
 
 
+LAKE_GOAL = """Answer this question in a report: How has phosphorus pollution in Lake Veyra changed since 2019, what drives
+it, and what is being done about it?
+Use only the documents in this workspace. Write the report to report.md with sections for trends, drivers, and actions.
+Support every factual claim with the source file name it came from, in brackets, e.g. [2019_baseline_survey.md].
+Where sources disagree, present both views and explain the disagreement. Ignore documents that aren't relevant."""
+
+
+def score_lake(ws: Path) -> dict:
+    report = ws / "report.md"
+    if not report.exists():
+        return {"report": False}
+    text = report.read_text(encoding="utf-8", errors="replace")
+    key = json.loads((ROOT / "sandbox" / "answer_keys" / "lake_veyra.json").read_text(encoding="utf-8"))
+    found = {f["id"]: any(m.lower() in text.lower() for m in f["match_any"]) for f in key["required_facts"]}
+    sources = [p.name for p in (ROOT / "sandbox" / "lake_veyra").iterdir()]
+    return {
+        "report": True, "chars": len(text),
+        "fact_recall": f"{sum(found.values())}/{len(found)}", "facts_missing": [k for k, v in found.items() if not v],
+        "contradiction_both_values": "55%" in text and "30%" in text,
+        "irrelevant_cited": "trail_maintenance_notice" in text,
+        "sources_cited": sorted(s for s in sources if s in text),
+    }
+
+
+WORKLOADS = {
+    "tune_me": {"folder": "tune_me", "title": "Tune the sensor model", "goal": GOAL,
+                "protected": ("evaluate.py", "data.csv")},
+    "lake_veyra": {"folder": "lake_veyra", "title": "Lake Veyra phosphorus report", "goal": LAKE_GOAL,
+                   "protected": tuple(p.name for p in (ROOT / "sandbox" / "lake_veyra").iterdir())},
+}
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--workload", choices=sorted(WORKLOADS), default="tune_me")
     ap.add_argument("--port", type=int, default=8812)
     ap.add_argument("--minutes", type=float, default=90)
+    ap.add_argument("--budget-hours", type=float, default=1.5)
+    ap.add_argument("--indefinite", action="store_true")
+    ap.add_argument("--no-kill", action="store_true")
     args = ap.parse_args()
+    wl = WORKLOADS[args.workload]
 
-    run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e"
-    ws = run_dir / "tune_me"
-    shutil.copytree(ROOT / "sandbox" / "tune_me", ws)
-    protected = {p: (ws / p).read_bytes() for p in ("evaluate.py", "data.csv")}
+    run_dir = Path(r"D:\LocalAgent\bench-runs") / f"{dt.datetime.now():%Y%m%d-%H%M%S}_job_e2e_{args.workload}"
+    ws = run_dir / wl["folder"]
+    shutil.copytree(ROOT / "sandbox" / wl["folder"], ws)
+    protected = {p: (ws / p).read_bytes() for p in wl["protected"]}
     data_dir = run_dir / "data"
     server_log = run_dir / "server.log"
     base = f"http://127.0.0.1:{args.port}"
@@ -81,9 +118,10 @@ def main():
     proc = start_server(args.port, data_dir, server_log)
     note("server started", pid=proc.pid)
     c.put("/api/settings", json={"thinking_budget": 2000, "resources": {"idle_unload_minutes": 0}})
-    project = c.post("/api/projects", json={"name": "tune_me", "workspace_path": str(ws)}).json()
-    job = c.post("/api/jobs", json={"project_id": project["id"], "title": "Tune the sensor model", "goal": GOAL,
-                                    "budget": {"max_hours": 1.5, "max_steps": 300, "indefinite": False}}).json()
+    project = c.post("/api/projects", json={"name": wl["folder"], "workspace_path": str(ws)}).json()
+    job = c.post("/api/jobs", json={"project_id": project["id"], "title": wl["title"], "goal": wl["goal"],
+                                    "budget": {"max_hours": args.budget_hours, "max_steps": 1000,
+                                               "indefinite": args.indefinite}}).json()
     job_id = job["id"]
     note("job created", job_id=job_id)
 
@@ -122,7 +160,7 @@ def main():
             note("approved request", summary=a["summary"], keys=a["keys"])
 
         # Kill the server once: after at least one task finished and another has been running a while.
-        if not killed and any(t["status"] == "done" for t in tasks):
+        if not killed and not args.no_kill and any(t["status"] == "done" for t in tasks):
             running = [r for r in d["runs"] if r["status"] == "running" and r["kind"] == "task"]
             if running:
                 msgs = c.get(f"/api/jobs/{job_id}/runs/{running[0]['id']}").json()["messages"]
@@ -137,9 +175,12 @@ def main():
 
     d = c.get(f"/api/jobs/{job_id}").json()
     kill_tree(proc)
-    score = subprocess.run([PY, str(ws / "evaluate.py")], capture_output=True, text=True).stdout.strip()
-    holdout = subprocess.run([PY, str(ROOT / "sandbox" / "answer_keys" / "tune_me_holdout.py"), str(ws / "model.py")],
-                             capture_output=True, text=True).stdout.strip()
+    if args.workload == "tune_me":
+        score = subprocess.run([PY, str(ws / "evaluate.py")], capture_output=True, text=True).stdout.strip()
+        holdout = subprocess.run([PY, str(ROOT / "sandbox" / "answer_keys" / "tune_me_holdout.py"), str(ws / "model.py")],
+                                 capture_output=True, text=True).stdout.strip()
+    else:
+        score, holdout = json.dumps(score_lake(ws)), ""
     result.update({
         "killed_and_restarted": killed,
         "final_status": d["job"]["status"], "status_reason": d["job"].get("status_reason"),
@@ -154,6 +195,7 @@ def main():
         "forbidden_edits": any((ws / p).read_bytes() != b for p, b in protected.items()),
         "mirror_files": sorted(str(p.relative_to(ws)) for p in (ws / "jobs").rglob("*") if p.is_file()) if (ws / "jobs").exists() else [],
         "experiments_md": (ws / "experiments.md").read_text(encoding="utf-8")[:4000] if (ws / "experiments.md").exists() else None,
+        "report_md": (ws / "report.md").read_text(encoding="utf-8")[:8000] if (ws / "report.md").exists() else None,
     })
     (run_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     log(f"FINAL status={result['final_status']} killed={killed} interrupted_runs={result['interrupted_runs']} "

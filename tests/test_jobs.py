@@ -100,6 +100,26 @@ def test_lint_accepts_good_plan_and_rejects_vague_or_broken_ones(workspace):
     assert any("blocked by policy" in e for e in lint_plan(blocked, policy, guard))
 
 
+def test_lint_rejects_checks_that_cannot_fail():
+    # From E2E run 2: exit-code checks on an evaluator that always exits 0.
+    weak = normalize_plan([{"id": "t6", "title": "Finalize", "instructions": "Pick the best model",
+                            "done_when": "Best model achieves RMSE < 1.0",
+                            "checks": [{"type": "command_ok", "command": "python evaluate.py"}]}])
+    assert any("only tests the exit code" in e for e in lint_plan(weak))
+    strong = normalize_plan([{"id": "t6", "title": "Finalize", "instructions": "Pick the best model",
+                              "done_when": "Best model achieves RMSE < 1.0",
+                              "checks": [{"type": "command_ok", "command": "python -c \"assert score() < 1.0\""}]}])
+    assert lint_plan(strong) == []
+    unlogged = normalize_plan([{"id": "t3", "title": "Try sine", "instructions": "Try a sine model",
+                                "done_when": "New score recorded and logged in experiments.md",
+                                "checks": [{"type": "command_ok", "command": "python evaluate.py"}]}])
+    assert any("no check looks at experiments.md" in e for e in lint_plan(unlogged))
+    logged = normalize_plan([{"id": "t3", "title": "Try sine", "instructions": "Try a sine model",
+                              "done_when": "New score recorded and logged in experiments.md",
+                              "checks": [{"type": "file_contains", "path": "experiments.md", "text": "sine"}]}])
+    assert lint_plan(logged) == []
+
+
 def test_next_ready_leaf_respects_parent_dependencies():
     plan = normalize_plan([
         {"id": "g1", "title": "Group 1", "instructions": "-", "done_when": "-"},

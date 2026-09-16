@@ -76,7 +76,8 @@ For an overview of the papers, read literature_digest.md; for detail on a point,
 claim, find the right note with a keyword search or leave the claim out; don't get stuck on it. Some works (for
 example most-cited works that weren't read) have no notes of their own: describe them through the papers that cite
 them and say they weren't read, rather than searching for evidence that isn't there. Support every
-factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write the file
+factual claim with note citations like [n12]. Present disagreements between papers as disagreements. Write only this
+section: one '##' heading at the top and '###' for anything below it. Write the file
 once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 
 ABSTRACT = """Read sections/_digest.md (the opening and key points of every section, built to fit your context) and write
@@ -322,6 +323,7 @@ def expand_sections(runner, job) -> None:
                                                      part=(_md_section(outline, heading) or "(no notes in the outline)")[:4000]),
                       "done_when": f"{path} exists, starts with the heading, and cites valid notes",
                       "checks": [{"type": "file_contains", "path": path, "text": f"## {heading}"},
+                                 {"type": "one_section", "path": path},
                                  # min 0: a section about works that weren't read may honestly cite nothing
                                  {"type": "citations_valid", "path": path, "min": 0}]})
     tasks.append({"key": "section_digest", "parent_key": "write", "title": "Build the section digest", "kind": "code",

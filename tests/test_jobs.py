@@ -604,3 +604,20 @@ def test_file_contains_ignores_case_for_headings_only(workspace):
     assert not check("## Methods").ok
     assert check("CASE matters here").ok
     assert not check("case matters here").ok                     # body text: exact
+
+
+def test_one_section_check(workspace):
+    from localagent.jobs.checks import describe, run_checks
+    from localagent.safety.commands import CommandPolicy
+    from localagent.safety.paths import PathGuard
+    (workspace / "one.md").write_text("## Trends\n\n### Detail\ntext\n", encoding="utf-8")
+    (workspace / "two.md").write_text("## Trends\n\ntext\n\n## Conclusion and summary\nmore\n", encoding="utf-8")
+    guard, policy = PathGuard(workspace), CommandPolicy()
+
+    def check(name):
+        return run_checks([{"type": "one_section", "path": name}], workspace, workspace, guard, policy, lambda *a: True)[0]
+
+    assert check("one.md").ok
+    bad = check("two.md")
+    assert not bad.ok and "2 '##' headings" in bad.detail
+    assert "exactly one" in describe({"type": "one_section", "path": "x.md"})

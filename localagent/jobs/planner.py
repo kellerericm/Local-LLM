@@ -14,6 +14,7 @@ MAX_TASKS = 80
 CHECK_TYPES = {
     "file_exists": ["path"],
     "file_contains": ["path", "text"],
+    "one_section": ["path"],
     "json_valid": ["path"],
     "command_ok": ["command"],
     "citations_valid": ["path"],

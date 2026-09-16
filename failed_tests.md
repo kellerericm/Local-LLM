@@ -3,6 +3,19 @@
 Record failures here: date, what was run, what happened (exact error), suspected cause, status (open / fixed / won't fix).
 A failure is information, not a verdict.
 
+## 2026-09-16 — deep_research final test (long-term memory and planning): four failures, all fixed
+Run: `job_e2e --template deep_research --inputs-file bench/probes/deep_research_final.json`. Outcome in experiments.md.
+1. **Seeds were off-topic.** The goal as one long sentence matched "machine learning" and "review": the seeds were ML surveys on agriculture, fluid mechanics, materials science, and a strategy paper. The seed gate would have caught it, but the harness approves gates blindly.
+   **Fix:** query seeds take one search per line, interleaved so every query contributes. Nine focused queries were checked against OpenAlex before the rerun.
+2. **Layout failed 3 attempts on capitalisation.** The outline was complete, but the check wanted "## Literature review" and the model wrote "## Literature Review".
+   **Fix:** file_contains compares markdown headings case-insensitively; body text still exact.
+3. **A section about unread works could not pass.** "Foundational Works" covers skipped papers with no notes. Citing borrowed notes failed review; removing them failed "cites ≥1 valid note".
+   **Fixes:** sections allow zero citations (min 0); the layout cites a note for an unread work only when that note discusses it.
+4. **Three attempts weren't enough for reviewed writing.** Each retry fixed the named issue and introduced another; sections 3-5 failed at 3 attempts.
+   **Fixes:** reviewed report tasks get 5 attempts; a review rejection now asks for targeted fixes only and warns on the last attempt. Sections 3, 4 and 5 then passed on attempts 2, 3 and 3.
+- Also: the report had two "## Conclusion and summary" headings because the literature review section wrote one. **Fix:** new `one_section` check on section files.
+- Harness: `--budget-steps` (the 1000-step cap paused the run before the abstract).
+
 ## 2026-09-15 — deep_research dry run (real OpenAlex): four problems
 - **Run:** `python -m bench.probes.job_e2e --workload empty --template deep_research --answer skip --permissions net:open-access --inputs-file bench/probes/deep_research_dryrun.json` (query: hippocampal replay, memory consolidation, planning).
 - **What happened:** after 4 hours the job paused on its budget with 1 paper attempted.

@@ -9,6 +9,27 @@ Move a finished experiment's conclusion into CLAUDE.md's design notes if it chan
 - **Status:** done
 - **Result:** `torch.cuda.is_available()` is True, and a bitsandbytes `Linear4bit` forward pass on CUDA works. No env rebuild needed. (Triton isn't available on Windows; that only affects flop counting and some compiled kernels.)
 
+## 2026-09-16 — Deep research final test: long-term memory and planning (Qwen3.5-9B, 4-bit)
+- **Question:** With the dry-run fixes in place, does deep_research produce a usable, honestly cited literature review on a real two-field topic?
+- **Setup:**
+  - Goal: "What biological mechanisms and machine learning approaches improve long-term memory and planning?"
+  - 9 seed queries (biology and ML), 12 seeds, max 20 papers, 3 rounds, follow threshold 3 or 15%, skip papers over 12 parts.
+  - `job_e2e --template deep_research --answer skip`; the script only plays the user (approves the plan and gates, answers "skip").
+  - Raw results: `D:\LocalAgent\bench-runs\20260915-213524_job_e2e_empty_deep_research\`.
+- **Status:** done. 7.9 h of job time, 1050 model steps, across 6 resumes (budget caps and fixes; see below).
+- **Results:**
+  - **Papers:** 5 read of 12 seeds (System consolidation of memory during sleep; Prioritized Experience Replay; Continual lifelong learning; MuZero; Selective Experience Replay). 9 unavailable or skipped.
+  - **Notes:** 112, all 112 verbatim.
+  - **Report:** 63 KB, 73 citations, **0 invalid**. The abstract states the scope correctly ("five papers read over two citation rounds, selected by citation convergence") from code-supplied facts.
+  - **Reviewer:** 11 pass, 16 fail. Rejections were specific and correct: a claim about sleep citing a REM-sleep note, "41 of 49 games" citing a note that only says "state-of-the-art", neurogenesis cited to a note that never mentions it. The citation table did its job.
+  - **Honesty:** skipped and unread works are labelled as such, with claims attributed to the papers that cite them.
+- **Failures fixed during the run** (details in failed_tests.md): one long sentence as a search query returned unrelated ML surveys; heading capitalisation failed checks; a section about unread works couldn't satisfy "cite ≥1 note"; 3 attempts weren't enough for reviewed writing.
+- **Weak points:**
+  - **Open access is the binding constraint.** McClelland 1995, DQN, "Overcoming catastrophic forgetting", CaMKII: all paywalled. The biology side thinned to one paper, so the review leans ML.
+  - **Citation convergence needs more papers.** With 5 read, "cited by ≥3" left 2 candidates, both paywalled, so the search stopped after round 1.
+  - The literature review section also wrote a "## Conclusion and summary", duplicating that heading in the report. Fixed by a new `one_section` check.
+- **Conclusion:** the pipeline holds end to end and the evidence chain (verbatim notes → citations → review) is sound. For real use, seed from a folder of PDFs you already have; scholarly search alone limits reading to what's open access.
+
 ## 2026-09-15 — Deep research dry run 8: first end-to-end report (Qwen3.5-9B, 4-bit)
 - **Question:** Can deep_research go from a search query to a compiled, cited literature review on the real model and real open-access sources?
 - **Setup:**

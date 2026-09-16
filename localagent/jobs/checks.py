@@ -42,6 +42,8 @@ def describe(check: dict) -> str:
         return f"file {check.get('path')} is valid JSON"
     if t == "command_ok":
         return f"command `{check.get('command')}` exits with code 0"
+    if t == "one_section":
+        return f"file {check.get('path')} contains exactly one '##' heading (this section only)"
     if t == "citations_valid":
         return f"file {check.get('path')} cites at least {check.get('min', 1)} saved notes as [n12], all of which exist"
     if t == "references_recorded":
@@ -134,6 +136,16 @@ def _run_one(c: dict, workspace, env_path, guard, policy, ask, cancel) -> CheckR
         # (final test: three attempts failed on capitalisation alone).
         found = wanted.lower() in text.lower() if wanted.lstrip().startswith("#") else wanted in text
         return CheckResult(c, found, "found" if found else f"the file doesn't contain the required text {wanted!r}")
+    if t == "one_section":
+        p = _path(c, workspace, guard)
+        if not p.is_file():
+            return CheckResult(c, False, "file not found")
+        heads = [l.strip() for l in p.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if l.startswith("## ") and not l.startswith("###")]
+        if len(heads) == 1:
+            return CheckResult(c, True, "one section")
+        return CheckResult(c, False, f"the file has {len(heads)} '##' headings ({', '.join(h[:40] for h in heads[:4])}); "
+                                     "write only this section, with sub-headings at '###'")
     if t == "json_valid":
         p = _path(c, workspace, guard)
         if not p.is_file():

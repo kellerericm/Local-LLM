@@ -58,8 +58,9 @@ Write outline.md once:
 - '## Abstract' (a placeholder line; it's written last)
 - '## Introduction and scope'
 - '## Literature review' with '### <theme>' subsections grouping the papers, bullets citing notes [n12]
-- '## Foundational works': the most-cited works and why they matter. For works that weren't read (status other
-  than read in the digest's table), say so, and describe them only through notes from the read papers that cite them
+- '## Foundational works': the most-cited works and why they matter. For works that weren't read (status other than
+  read in the digest's table), say so, and cite a note only if that note is from a read paper and actually discusses
+  the work; otherwise give no citation rather than borrowing an unrelated note
 - '## Synthesis: agreements, conflicts, and gaps', citing notes on both sides of each disagreement
 - '## Conclusion and summary'
 Then call check_citations on outline.md once, fix any ids it lists, and call complete_task (the section checks run
@@ -318,7 +319,8 @@ def expand_sections(runner, job) -> None:
                                                      part=(_md_section(outline, heading) or "(no notes in the outline)")[:4000]),
                       "done_when": f"{path} exists, starts with the heading, and cites valid notes",
                       "checks": [{"type": "file_contains", "path": path, "text": f"## {heading}"},
-                                 {"type": "citations_valid", "path": path}]})
+                                 # min 0: a section about works that weren't read may honestly cite nothing
+                                 {"type": "citations_valid", "path": path, "min": 0}]})
     tasks.append({"key": "section_digest", "parent_key": "write", "title": "Build the section digest", "kind": "code",
                   "handler": "section_digest", "depends_on": keys, "instructions": "-",
                   "done_when": "sections/_digest.md exists"})

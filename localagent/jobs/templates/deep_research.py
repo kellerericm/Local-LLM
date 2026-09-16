@@ -421,7 +421,18 @@ def handle_seed(runner, job, task) -> HandlerResult:
         client = scholar(runner)
         works: list[Work] = []
         if mode == "query":
-            works = client.search(c["seeds"] or job["goal"], c["seed_count"])
+            # One search per line: a single long sentence matches common words ("machine learning", "review") rather
+            # than the topic, so several focused queries beat one broad one (final test, first attempt).
+            queries = [q.strip() for q in str(c["seeds"] or job["goal"]).splitlines() if q.strip()]
+            per_query = max(3, -(-c["seed_count"] // len(queries)))
+            results = [client.search(q, per_query) for q in queries]
+            seen: set[str] = set()
+            for rank in range(per_query):                      # round robin, so every query contributes
+                for found in results:
+                    if rank < len(found) and found[rank].key() not in seen:
+                        seen.add(found[rank].key())
+                        works.append(found[rank])
+            works = works[:max(c["seed_count"], len(queries))]
         else:
             for line in [l.strip() for l in str(c["seeds"]).splitlines() if l.strip()]:
                 doi = re.search(r"10\.\d{4,9}/\S+", line)
@@ -697,7 +708,8 @@ DEEP_RESEARCH = register(DeepResearch(
                 "with an abstract, literature review, and conclusion.",
     inputs_schema={
         "seed_mode": {"enum": ["query", "folder", "list"], "label": "Start from", "default": "query"},
-        "seeds": {"type": "string", "label": "Search query, folder, or list of titles/DOIs", "default": ""},
+        "seeds": {"type": "string", "label": "Search queries (one per line), folder, or list of titles/DOIs",
+                  "default": ""},
         "max_papers": {"type": "string", "label": "Max papers read", "default": "60"},
         "max_rounds": {"type": "string", "label": "Max citation rounds", "default": "4"},
         "min_citations": {"type": "string", "label": "Follow works cited by at least", "default": "3"},

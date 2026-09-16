@@ -25,7 +25,9 @@ class FakeScholar:
         self.downloads = []
 
     def search(self, query, n=10):
-        return [self.works[k] for k in ("WA", "WB", "WC")][:n]
+        self.queries = getattr(self, "queries", []) + [query]
+        picks = {"replay": ("WA", "WB"), "consolidation": ("WB", "WC")}.get(query.strip(), ("WA", "WB", "WC"))
+        return [self.works[k] for k in picks][:n]
 
     def get_by_ids(self, ids):
         return [self.works[i] for i in ids if i in self.works]
@@ -344,3 +346,15 @@ def test_literature_digest_fits_budget_with_many_papers(tmp_path):
     assert text.count("### Paper ") == 60 and "Skipped" not in text
     assert text.index("### Paper 0 ") < text.index("### Paper 59 ")          # most-cited first
     assert "[n0]" in text and "x x x" not in text                              # claims kept, section summaries left out
+
+
+def test_query_seeds_run_one_search_per_line(env_factory, workspace):
+    fake = FakeScholar(workspace)
+    env = env_factory([])
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay\nconsolidation", seed_count="4")
+    env.runner._tick()
+    env.runner.approve_plan(env.jobs.get_job(job["id"])["id"])
+    env.runner._tick()
+    assert fake.queries == ["replay", "consolidation"]
+    assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Paper B", "Paper C"]   # merged, no dupes

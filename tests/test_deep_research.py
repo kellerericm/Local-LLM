@@ -358,3 +358,17 @@ def test_query_seeds_run_one_search_per_line(env_factory, workspace):
     env.runner._tick()
     assert fake.queries == ["replay", "consolidation"]
     assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Paper B", "Paper C"]   # merged, no dupes
+
+
+def test_reviewed_report_tasks_get_more_attempts(env_factory, workspace):
+    from localagent.jobs.templates.deep_research import REVIEWED_ATTEMPTS, expand_sections
+    (workspace / "outline.md").write_text("# R\n\n## Abstract\n\n## Findings\n- a [n1]\n\n## Conclusion and summary\n- b [n1]\n",
+                                          encoding="utf-8")
+    env = env_factory([])
+    job = make_job(env)
+    env.jobs.replace_plan(job["id"], [{"key": "layout_gate", "title": "gate", "instructions": "-", "done_when": "-",
+                                       "checks": [], "depends_on": [], "parent_key": None}])
+    expand_sections(env.runner, env.jobs.get_job(job["id"]))
+    tasks = {t["key"]: t for t in env.jobs.list_tasks(job["id"])}
+    assert tasks["s1"]["max_attempts"] == REVIEWED_ATTEMPTS and tasks["abstract"]["max_attempts"] == REVIEWED_ATTEMPTS
+    assert tasks["section_digest"]["max_attempts"] == 3          # code tasks keep the default

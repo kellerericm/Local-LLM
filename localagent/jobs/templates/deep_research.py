@@ -86,6 +86,7 @@ important notes like [n12], using only note ids that appear in the digest. Call 
 ids it lists, then call complete_task.
 Facts about the scope, from the job's records (use these numbers exactly; don't count notes as papers): {facts}"""
 
+REVIEWED_ATTEMPTS = 5
 DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with room for the task and the answer
 SECTION_DIGEST_CHARS = 16_000
 
@@ -314,6 +315,8 @@ def expand_sections(runner, job) -> None:
         path = f"sections/{i:02d}-{slug(heading)}.md"
         keys.append(f"s{i}")
         tasks.append({"key": f"s{i}", "parent_key": "write", "title": f"Write section: {heading}", "review": True,
+                      # Reviewed writing converges slowly: each pass fixes the named issue and often adds another.
+                      "max_attempts": REVIEWED_ATTEMPTS,
                       # The outline part goes in the instructions, which context fitting never shortens.
                       "instructions": SECTION.format(heading=heading, path=path,
                                                      part=(_md_section(outline, heading) or "(no notes in the outline)")[:4000]),
@@ -334,6 +337,7 @@ def expand_sections(runner, job) -> None:
              f"were skipped. Search stop reason: {(rounds[-1].get('stop') if rounds else None) or 'not recorded'}. "
              f"Papers read: " + "; ".join(f"{p['title']} ({p['year'] or 'n.d.'})" for p in read[:20]))
     tasks.append({"key": "abstract", "parent_key": "write", "title": "Write the abstract",
+                  "max_attempts": REVIEWED_ATTEMPTS,
                   "instructions": ABSTRACT.format(facts=facts),
                   "depends_on": ["section_digest"], "review": True, "done_when": "sections/00-abstract.md exists with a cited abstract",
                   "checks": [{"type": "file_contains", "path": "sections/00-abstract.md", "text": "## Abstract"},

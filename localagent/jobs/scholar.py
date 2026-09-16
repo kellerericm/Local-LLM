@@ -88,6 +88,20 @@ def work_from_openalex(d: dict) -> Work:
     )
 
 
+# Hosts that serve PDFs or full text to a script. Publisher sites (Wiley, ScienceDirect, Cell, Nature) return 403
+# even for open-access articles, so an "is_oa" flag alone doesn't mean we can read it (final test: 9 of 12 seeds lost).
+OPEN_HOSTS = ("arxiv.org", "biorxiv.org", "medrxiv.org", "ncbi.nlm.nih.gov", "europepmc.org", "ebi.ac.uk",
+              "plos.org", "frontiersin.org", "mdpi.com", "elifesciences.org", "jneurosci.org", "pnas.org",
+              "openreview.net", "jmlr.org", "aaai.org", "neurips.cc", "mlr.press", "peerj.com", "nature.com/articles",
+              "springeropen.com", "biomedcentral.com", "hindawi.com", "cogitatiopress.com", "osf.io")
+
+
+def obtainable(w: Work) -> bool:
+    """True when some open-access location is on a host that serves scripted downloads, or the work is in PMC."""
+    urls = [u for u in ([w.oa_pdf_url] + list(w.pdf_urls)) if u]
+    return any(any(h in u.lower() for h in OPEN_HOSTS) for u in urls)
+
+
 def _local(tag) -> str:
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
@@ -167,10 +181,21 @@ class ScholarClient:
             self._last = time.time()
             return json.loads(r.read().decode("utf-8"))
 
-    def search(self, query: str, n: int = 10) -> list[Work]:
-        data = self._get(f"{OPENALEX}/works", {"search": query, "per-page": min(n, 50),
-                                                 "filter": "type:article|preprint|review"})
-        return [work_from_openalex(d) for d in data.get("results", [])]
+    def search(self, query: str, n: int = 10, open_access: bool = False, max_pages: int = 4) -> list[Work]:
+        """Ranked search. With open_access, ask OpenAlex for open works only and keep paging until n of them look
+        obtainable (a host we can actually download from), so a quota is filled rather than truncated."""
+        filters = "type:article|preprint|review" + (",open_access.is_oa:true" if open_access else "")
+        out: list[Work] = []
+        for page in range(1, max_pages + 1):
+            data = self._get(f"{OPENALEX}/works", {"search": query, "per-page": 50, "page": page, "filter": filters})
+            results = data.get("results", [])
+            if not results:
+                break
+            works = [work_from_openalex(d) for d in results]
+            out += [w for w in works if not open_access or obtainable(w)] if open_access else works
+            if len(out) >= n:
+                break
+        return out[:n]
 
     def get_by_ids(self, openalex_ids: list[str]) -> list[Work]:
         out = []
@@ -277,6 +302,38 @@ class ScholarClient:
             if len(text) > 2000:
                 return text, url
         return None
+
+    def wikipedia_references(self, article: str, limit: int = 60) -> list[dict]:
+        """The works an encyclopedia article cites: a curated reading list for a topic. Returns dicts with doi, title,
+        year and arxiv, in article order, for resolving against the scholarly index."""
+        data = self._get("https://en.wikipedia.org/w/api.php", {
+            "action": "query", "format": "json", "prop": "revisions", "rvprop": "content", "rvslots": "main",
+            "titles": article, "redirects": 1})
+        pages = (data.get("query") or {}).get("pages") or {}
+        page = next(iter(pages.values()), {})
+        if "revisions" not in page:
+            return []
+        text = page["revisions"][0]["slots"]["main"]["*"]
+        out: list[dict] = []
+        seen: set[str] = set()
+        for block in re.findall(r"\{\{\s*(?:cite|citation)[^{}]*(?:\{\{[^{}]*\}\}[^{}]*)*\}\}", text, re.I | re.S):
+            def field(name: str) -> str | None:
+                m = re.search(rf"\|\s*{name}\s*=\s*([^|}}\n]+)", block, re.I)
+                return m.group(1).strip() or None if m else None
+
+            doi, title = field("doi"), field("title")
+            arxiv = field("arxiv") or field("eprint")
+            year = field("year") or (field("date") or "")
+            y = re.search(r"(19|20)\d{2}", year or "")
+            key = (doi or "").lower() or normalize_title(title or "") or (arxiv or "")
+            if not key or key in seen or not (doi or title or arxiv):
+                continue
+            seen.add(key)
+            out.append({"doi": doi, "title": re.sub(r"\[\[|\]\]|''", "", title) if title else None,
+                        "arxiv": arxiv, "year": int(y.group(0)) if y else None})
+            if len(out) >= limit:
+                break
+        return out
 
     def download_pdf(self, url: str, dest: Path) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/pdf,*/*;q=0.8"})

@@ -12,14 +12,15 @@ import math
 import re
 from pathlib import Path
 
-from ..scholar import ScholarClient, Work, normalize_title, work_key
+from ..scholar import ScholarClient, Work, normalize_title, obtainable, work_key
 from ..sessions import JobApprover
 from . import register
 from .base import HandlerResult, Template, is_approval
 from .research_report import compile_report, find_sources, slug, workspace_of
 
 DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4, "min_citations": 3,
-            "min_fraction": 0.15, "per_round": 8, "seed_count": 10, "max_parts": 12, "format": "md"}
+            "min_fraction": 0.15, "per_round": 8, "seed_count": 10, "max_parts": 12, "open_access_only": "yes",
+            "format": "md"}
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
@@ -125,6 +126,25 @@ def text_path(key: str) -> str:
     return f"papers/text/{slug(key.replace(':', '-'))[:60]}.md"
 
 
+def resolve_references(client, refs: list[dict], want: int, open_access: bool) -> list[Work]:
+    """Turn reference entries (from an encyclopedia article or a reference list) into works, keeping the ones we can
+    actually read when open_access is set. Stops once `want` are found."""
+    out: list[Work] = []
+    for r in refs:
+        w = client.get_by_doi(r["doi"]) if r.get("doi") else None
+        if w is None and r.get("title"):
+            w = client.find_by_title(r["title"], r.get("year"))
+        if w is None and r.get("arxiv"):
+            w = Work(None, r.get("title") or r["arxiv"], r.get("year"), arxiv_id=r["arxiv"],
+                     oa_pdf_url=f"https://arxiv.org/pdf/{r['arxiv']}")
+        if w is None or (open_access and not obtainable(w)):
+            continue
+        out.append(w)
+        if len(out) >= want:
+            break
+    return out
+
+
 def register_work(runner, job, w: Work, round_: int, status: str = "queued", cited_by: int = 0) -> dict:
     return runner.jobs.upsert_paper(job["id"], w.key(), title=w.title, year=w.year, authors=w.authors, doi=w.doi,
                                     openalex_id=w.openalex_id, arxiv_id=w.arxiv_id, oa_pdf_url=w.oa_pdf_url,
@@ -133,21 +153,25 @@ def register_work(runner, job, w: Work, round_: int, status: str = "queued", cit
 
 
 def write_seeds_md(ws: Path, papers: list[dict]) -> None:
-    lines = ["# Seed papers", "", "| # | Title | Year | Status | Source |", "|---|---|---|---|---|"]
+    from ..scholar import OPEN_HOSTS
+
+    lines = ["# Seed papers", "", "| # | Title | Year | Can download? | Status | Source |", "|---|---|---|---|---|---|"]
     for i, p in enumerate(papers, 1):
         where = p["file_path"] or (p["doi"] and f"doi:{p['doi']}") or (p["openalex_id"] and f"OpenAlex {p['openalex_id']}") or "-"
-        lines.append(f"| {i} | {p['title']} | {p['year'] or ''} | {p['status']} | {where} |")
+        url = (p["oa_pdf_url"] or "").lower()
+        can = "local file" if p["file_path"] else ("yes" if any(h in url for h in OPEN_HOSTS) else "maybe" if url else "no")
+        lines.append(f"| {i} | {p['title']} | {p['year'] or ''} | {can} | {p['status']} | {where} |")
     (ws / "seeds.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------- plan
 def _initial_plan(runner, job):
     c = cfg(job)
-    if c["seed_mode"] not in ("folder", "list", "query"):
-        raise ValueError("seed_mode must be folder, list, or query")
+    if c["seed_mode"] not in ("folder", "list", "query", "wikipedia"):
+        raise ValueError("seed_mode must be folder, list, query, or wikipedia")
     tasks = [{"key": "seed", "title": "Find the starting papers", "kind": "code", "handler": "seed",
               "instructions": f"Seed mode: {c['seed_mode']}", "done_when": "seed papers registered"}]
-    if c["seed_mode"] in ("list", "query"):
+    if c["seed_mode"] in ("list", "query", "wikipedia"):
         tasks.append({"key": "seed_gate", "title": "Your review of the seed papers", "kind": "gate", "depends_on": ["seed"],
                       "params": {"prompt": "Review seeds.md (the starting papers). Reply 'approve', 'drop 2, 5' to remove "
                                            "papers, or type a different search query."}})
@@ -428,19 +452,26 @@ def handle_seed(runner, job, task) -> HandlerResult:
         require_network(runner, job, task, f"Find seed papers for: {c['seeds'] or job['goal']}")
         client = scholar(runner)
         works: list[Work] = []
-        if mode == "query":
-            # One search per line: a single long sentence matches common words ("machine learning", "review") rather
-            # than the topic, so several focused queries beat one broad one (final test, first attempt).
-            queries = [q.strip() for q in str(c["seeds"] or job["goal"]).splitlines() if q.strip()]
-            per_query = max(3, -(-c["seed_count"] // len(queries)))
-            results = [client.search(q, per_query) for q in queries]
+        oa_only = str(c["open_access_only"]).strip().lower() not in ("no", "false", "0", "")
+        if mode in ("query", "wikipedia"):
+            # One source per line, each filling its own share of the seeds: a single long sentence matches common
+            # words rather than the topic, and per-source quotas keep a topic's sides balanced (say 5 biology
+            # queries and 5 machine-learning ones).
+            lines = [q.strip() for q in str(c["seeds"] or job["goal"]).splitlines() if q.strip()]
+            per_source = max(1, -(-c["seed_count"] // len(lines)))
+            results = []
+            for line in lines:
+                if mode == "query":
+                    results.append(client.search(line, per_source, open_access=oa_only))
+                else:
+                    results.append(resolve_references(client, client.wikipedia_references(line), per_source, oa_only))
             seen: set[str] = set()
-            for rank in range(per_query):                      # round robin, so every query contributes
+            for rank in range(per_source):                     # round robin, so every source contributes
                 for found in results:
                     if rank < len(found) and found[rank].key() not in seen:
                         seen.add(found[rank].key())
                         works.append(found[rank])
-            works = works[:max(c["seed_count"], len(queries))]
+            works = works[:max(c["seed_count"], len(lines))]
         else:
             for line in [l.strip() for l in str(c["seeds"]).splitlines() if l.strip()]:
                 doi = re.search(r"10\.\d{4,9}/\S+", line)
@@ -715,9 +746,10 @@ DEEP_RESEARCH = register(DeepResearch(
                 "follows the most-cited references round by round until citations converge, then writes a report "
                 "with an abstract, literature review, and conclusion.",
     inputs_schema={
-        "seed_mode": {"enum": ["query", "folder", "list"], "label": "Start from", "default": "query"},
-        "seeds": {"type": "string", "label": "Search queries (one per line), folder, or list of titles/DOIs",
-                  "default": ""},
+        "seed_mode": {"enum": ["query", "folder", "list", "wikipedia"], "label": "Start from", "default": "query"},
+        "seeds": {"type": "string", "label": "Search queries or Wikipedia articles (one per line), folder, or list "
+                           "of titles/DOIs", "default": ""},
+        "open_access_only": {"enum": ["yes", "no"], "label": "Seed only with papers we can download", "default": "yes"},
         "max_papers": {"type": "string", "label": "Max papers read", "default": "60"},
         "max_rounds": {"type": "string", "label": "Max citation rounds", "default": "4"},
         "min_citations": {"type": "string", "label": "Follow works cited by at least", "default": "3"},

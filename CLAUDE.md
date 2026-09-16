@@ -80,7 +80,7 @@
 			Reviewer pass (jobs/review.py): fresh context, never sees the worker transcript; also removes unsupported context items.
 			Checks citations_valid, notes_for_source, references_recorded.
 			research_report template: read → notes → reviewed outline → outline gate → reviewed sections → summary → compile md/docx.
-			deep_research template: seeds from folder/list/query with seed gate; per-paper acquire (open-access via OpenAlex/arXiv, else ask the user) and reviewed section-by-section read with record_references; citation rounds with convergence (≥3 or ≥15%), 4 rounds, 60 papers; layout gate; sections, abstract, compile with bibliography. Network needs the net:open-access job permission or an approval.
+			deep_research template: seeds from folder/list/search queries (one per line, each filling its share)/Wikipedia article references, open-access-only seeding by default, with seed gate; per-paper acquire (open-access via OpenAlex/arXiv, else ask the user) and reviewed section-by-section read with record_references; citation rounds with convergence (≥3 or ≥15%), 4 rounds, 60 papers; layout gate; sections, abstract, compile with bibliography. Network needs the net:open-access job permission or an approval.
 			Real auto-research benchmark: sandbox/lm_speedrun (byte-level GPT, 5-minute budget, bits-per-byte on hidden Shakespeare text).
 			deep_research final test topic: biological mechanisms and ML approaches to long-term memory and planning.
 		Phase 3: long-term tasks ("jobs"). Design (approved): docs/design/phase3_long_running_tasks.md.

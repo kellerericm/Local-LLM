@@ -75,7 +75,13 @@ LocalAgent is an AI agent that runs entirely on your computer. You give it tasks
   4. It writes each section with citations like `[n12]`. Each section is reviewed.
   5. It compiles `report.md` (or DOCX for formal reports) with a *Sources and evidence* appendix listing every cited quote.
 - **Deep research (citation snowballing):** literature research that follows citations.
-  1. **Starting papers** come from a folder, a pasted list of titles/DOIs/arXiv links, or a search query. For lists and queries you review the seed list first: reply *approve*, *drop 2, 5*, or a new query.
+  1. **Starting papers** come from one of four sources. You review the seed list before any reading starts: reply *approve*, *drop 2, 5*, or type a different query.
+     - **A folder** of PDFs you already have. Best for a topic where much of the literature is paywalled: nothing has to be downloaded.
+     - **Search queries, one per line.** Each line is searched separately and fills its own share of the seeds, so five biology queries and five machine-learning ones give you five of each. One long sentence works badly: it matches common words like "machine learning" instead of your topic.
+     - **Wikipedia articles, one per line** (*Start from: wikipedia*). The job takes the works the article cites, which is a curated reading list. Specific articles ("Hippocampal replay", "Catastrophic interference") give much better seeds than broad ones ("Reinforcement learning").
+     - **A pasted list** of titles, DOIs or arXiv links.
+
+     *Seed only with papers we can download* (on by default) keeps searching past results it can't fetch until it has the number of seeds you asked for. Publishers like Wiley, Elsevier and Nature refuse scripted downloads even for open-access articles, so this favours arXiv, PubMed Central, PLOS, Frontiers and similar. `seeds.md` shows a *Can download?* column. Turn it off to see everything and add PDFs yourself.
   2. **Each paper** is downloaded if a legal open-access copy exists; otherwise you're asked to add the PDF or skip it. It's then read section by section into `papers/<paper>.md` (section summaries, key claims with verified quotes, and a *value of this paper* assessment), and its reference list is recorded. Each write-up is reviewed.
   3. **After each round,** the job counts how many papers it has read cite each unread work (`citation_graph.md`) and reads the most-cited ones next.
   4. **It stops** when citations converge (no unread work is cited by 3 or more papers read, or 15% of them), after 4 citation rounds, or at 60 papers. You can change these limits.

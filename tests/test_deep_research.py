@@ -24,19 +24,26 @@ class FakeScholar:
         }
         self.downloads = []
 
-    def search(self, query, n=10):
+    def search(self, query, n=10, open_access=False, max_pages=4):
         self.queries = getattr(self, "queries", []) + [query]
+        self.open_access = open_access
         picks = {"replay": ("WA", "WB"), "consolidation": ("WB", "WC")}.get(query.strip(), ("WA", "WB", "WC"))
         return [self.works[k] for k in picks][:n]
+
+    def wikipedia_references(self, article, limit=60):
+        self.articles = getattr(self, "articles", []) + [article]
+        return [{"doi": "10.1/a", "title": "Paper A", "year": 2021, "arxiv": None},
+                {"doi": None, "title": "Foundation One", "year": 1998, "arxiv": None},
+                {"doi": None, "title": "Unknown paper", "year": 2000, "arxiv": None}]
 
     def get_by_ids(self, ids):
         return [self.works[i] for i in ids if i in self.works]
 
     def get_by_doi(self, doi):
-        return None
+        return self.works["WA"] if doi == "10.1/a" else None
 
     def find_by_title(self, title, year=None):
-        return None
+        return next((w for w in self.works.values() if w.title == title), None)
 
     def candidate_pdf_urls(self, paper):
         return ["https://publisher.example/landing.html"] + ([paper["oa_pdf_url"]] if paper.get("oa_pdf_url") else [])
@@ -372,3 +379,26 @@ def test_reviewed_report_tasks_get_more_attempts(env_factory, workspace):
     tasks = {t["key"]: t for t in env.jobs.list_tasks(job["id"])}
     assert tasks["s1"]["max_attempts"] == REVIEWED_ATTEMPTS and tasks["abstract"]["max_attempts"] == REVIEWED_ATTEMPTS
     assert tasks["section_digest"]["max_attempts"] == 3          # code tasks keep the default
+
+
+def test_wikipedia_seeds_take_the_articles_cited_works(env_factory, workspace):
+    fake = FakeScholar(workspace)
+    env = env_factory([])
+    env.runner.scholar = fake
+    job = make_job(env, seed_mode="wikipedia", seeds="Memory consolidation", seed_count="2", open_access_only="no")
+    env.runner._tick()
+    env.runner.approve_plan(job["id"])
+    env.runner._tick()
+    assert fake.articles == ["Memory consolidation"]
+    assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Foundation One"]
+
+
+def test_query_seeds_ask_for_open_access_by_default(env_factory, workspace):
+    fake = FakeScholar(workspace)
+    env = env_factory([])
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay", seed_count="3")
+    env.runner._tick()
+    env.runner.approve_plan(job["id"])
+    env.runner._tick()
+    assert fake.open_access is True

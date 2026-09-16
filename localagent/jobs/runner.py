@@ -506,8 +506,14 @@ class JobRunner:
             if not failed and task["review"]:
                 review = self._review(job, task, res["summary"], run)
             if not failed and review is not None and not review["passed"]:
+                last = task["attempts"] + 2 >= task["max_attempts"]
                 self._attempt_failed(job, task, run, session, "review_rejected",
-                                     "A reviewer rejected the previous attempt:\n" + review["issues_text"])
+                                     "A reviewer rejected the previous attempt:\n" + review["issues_text"]
+                                     + "\nFix exactly these points and change nothing else; rewriting the whole "
+                                     "output tends to introduce new problems. Where a claim goes further than the "
+                                     "note it cites, narrow the claim to what the note says or drop it."
+                                     + (" This is the last attempt: leave out anything you can't support rather "
+                                        "than citing a note that doesn't fit." if last else ""))
             elif not failed:
                 self.jobs.update_task(task["id"], status=T_DONE, result_summary=res["summary"][:1200])
                 self.jobs.finish_run(run["id"], "done", "complete", res["summary"], session.steps)

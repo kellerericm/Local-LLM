@@ -178,3 +178,23 @@ def test_citation_table_pairs_sentences_with_the_notes_they_cite(tmp_path):
     assert '"Maps are spatial." -> [n2] Bellman backups' in table and "[n9] (no such note)" in table
     assert '"Bullet claim" -> [n1]' in table
     assert "more citations not shown" in citation_table(tmp_path, ["s.md"], notes, limit=120)
+
+
+def test_review_rejection_guidance_is_targeted_and_warns_on_the_last_attempt(env_factory, workspace):
+    (workspace / "a.md").write_text("Baseline error is 3.01 on the evaluator.")
+    cycle = [call("add_note", claim="Baseline", quote="Baseline error is 3.01", source="a.md"),
+             call("complete_task", summary="Saved the baseline note from a.md."),
+             review("fail", issues=[{"problem": "claim goes beyond its note"}])]
+    env = env_factory(cycle * 2)
+    job = env.job()
+    env.plan(job["id"], plan=[{"id": "t1", "title": "Note baseline", "instructions": "Take a note from a.md",
+                               "done_when": "One note saved from a.md about the baseline",
+                               "checks": [{"type": "notes_for_source", "source": "a.md"}]}])
+    t1 = env.task(job["id"], "t1")
+    env.jobs.s._exec("UPDATE job_tasks SET review=1, max_attempts=3 WHERE id=?", (t1["id"],))
+    env.runner._tick()
+    t = env.task(job["id"], "t1")
+    assert t["status"] == "pending" and "Fix exactly these points" in t["guidance"][-1]
+    assert "last attempt" not in t["guidance"][-1]
+    env.runner._tick()                                  # attempt 2 of 3: one retry left after this rejection
+    assert "This is the last attempt" in env.task(job["id"], "t1")["guidance"][-1]

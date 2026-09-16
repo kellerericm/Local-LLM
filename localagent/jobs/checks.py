@@ -129,8 +129,11 @@ def _run_one(c: dict, workspace, env_path, guard, policy, ask, cancel) -> CheckR
         if not p.is_file():
             return CheckResult(c, False, "file not found")
         text = p.read_text(encoding="utf-8", errors="replace")
-        return CheckResult(c, c["text"] in text, "found" if c["text"] in text
-                           else f"the file doesn't contain the required text {c['text']!r}")
+        wanted = c["text"]
+        # Heading case is cosmetic: "## Literature Review" satisfies "## Literature review"
+        # (final test: three attempts failed on capitalisation alone).
+        found = wanted.lower() in text.lower() if wanted.lstrip().startswith("#") else wanted in text
+        return CheckResult(c, found, "found" if found else f"the file doesn't contain the required text {wanted!r}")
     if t == "json_valid":
         p = _path(c, workspace, guard)
         if not p.is_file():

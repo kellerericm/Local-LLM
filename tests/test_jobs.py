@@ -587,3 +587,20 @@ def test_task_prompt_shows_user_guidance_and_only_recent_attempt_notes():
     shown, omitted = recent_guidance(items)
     assert omitted == 2 and not any(s.endswith((" one", " two")) for s in shown)
     assert "data.csv" in shown[0] and "reviewer" in shown[1] and shown[-1].endswith("four")
+
+
+def test_file_contains_ignores_case_for_headings_only(workspace):
+    from localagent.jobs.checks import run_checks
+    from localagent.safety.commands import CommandPolicy
+    from localagent.safety.paths import PathGuard
+    (workspace / "o.md").write_text("# Title\n\n## Literature Review\n\nCASE matters here\n", encoding="utf-8")
+    guard, policy = PathGuard(workspace), CommandPolicy()
+
+    def check(text):
+        return run_checks([{"type": "file_contains", "path": "o.md", "text": text}], workspace, workspace,
+                          guard, policy, lambda *a: True)[0]
+
+    assert check("## Literature review").ok                      # heading: case-insensitive
+    assert not check("## Methods").ok
+    assert check("CASE matters here").ok
+    assert not check("case matters here").ok                     # body text: exact

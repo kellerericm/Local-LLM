@@ -101,6 +101,7 @@ def main():
     ap.add_argument("--port", type=int, default=8812)
     ap.add_argument("--minutes", type=float, default=90)
     ap.add_argument("--budget-hours", type=float, default=1.5)
+    ap.add_argument("--budget-steps", type=int, default=1000)
     ap.add_argument("--indefinite", action="store_true")
     ap.add_argument("--no-kill", action="store_true")
     ap.add_argument("--template", default="generic", help="job type: generic, research_report, deep_research")
@@ -146,7 +147,7 @@ def main():
     proc = start_server(args.port, data_dir, server_log)
     note("server started", pid=proc.pid)
     c.put("/api/settings", json={"thinking_budget": 2000, "resources": {"idle_unload_minutes": 0}})
-    budget = {"max_hours": args.budget_hours, "max_steps": 1000, "indefinite": args.indefinite}
+    budget = {"max_hours": args.budget_hours, "max_steps": args.budget_steps, "indefinite": args.indefinite}
     if args.resume:
         import sqlite3
         con = sqlite3.connect(data_dir / "localagent.sqlite3")

@@ -6,6 +6,5 @@
   "max_rounds": "1",
   "per_round": "6",
   "screen_batch": "15",
-  "max_parts": "12",
   "format": "md"
 }

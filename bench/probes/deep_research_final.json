@@ -5,7 +5,6 @@
   "max_papers": "20",
   "max_rounds": "3",
   "per_round": "8",
-  "max_parts": "12",
   "format": "md",
   "screen_batch": "15"
 }

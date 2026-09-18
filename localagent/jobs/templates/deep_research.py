@@ -27,7 +27,7 @@ from .base import HandlerResult, Template, is_approval
 from .research_report import compile_report, find_sources, slug, workspace_of
 
 DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4, "per_round": 8, "seed_count": 10,
-            "screen_batch": 15, "max_parts": 12, "open_access_only": "yes", "format": "md"}
+            "screen_batch": 15, "open_access_only": "yes", "format": "md"}
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
@@ -102,7 +102,7 @@ SECTION_DIGEST_CHARS = 16_000
 
 def cfg(job: dict) -> dict:
     c = {**DEFAULTS, **{k: v for k, v in (job.get("inputs") or {}).items() if v not in (None, "")}}
-    for k in ("max_papers", "max_rounds", "per_round", "seed_count", "screen_batch", "max_parts"):
+    for k in ("max_papers", "max_rounds", "per_round", "seed_count", "screen_batch"):
         c[k] = int(c[k])
     return c
 
@@ -180,8 +180,8 @@ that is handled for you, and a paper that turns out to be unavailable is replace
 is relevant, call keep_sources with an empty list to see the next one. When the tool says the round is finished, call
 complete_task with a sentence on what you kept and why."""
 
-MAX_LISTS = 20           # safety bound on lists per screening task, so a run can't page an index forever
-MAX_TOPUPS = 3           # times a round may go back for replacements after papers are lost during reading
+# A round ends when it has the sources it asked for, or when every search it has is exhausted. Nothing else caps
+# it: the job's own budget (hours and steps) is what bounds a run, and max_papers and max_rounds are the user's.
 LOOKAHEAD = 2            # extra candidates fetched per slot, to rank a tranche before offering it
 
 
@@ -533,9 +533,6 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
 
     if have >= quota:
         return "\n".join(lines) + "\nThis round is finished. Call complete_task now."
-    if lists_shown >= MAX_LISTS:
-        return "\n".join(lines) + (f"\nThat was list {MAX_LISTS} for this round, the limit. Call complete_task now; "
-                                   "the job will go on with what it has.")
     runner.jobs.update_task(task["id"], params={**task["params"], "lists": lists_shown + 1})
     text = next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota)
     if text is None:
@@ -872,16 +869,10 @@ def _ready(runner, job, task, p: dict, summary: str) -> HandlerResult:
     except Exception as e:
         runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable")
         return HandlerResult(True, f"{summary} But the text couldn't be extracted ({e}); skipping this paper.")
-    limit = cfg(job)["max_parts"]
-    if n > limit:
-        # The job runs unattended, so length decides itself: reading half a paper and calling it read would be worse
-        # than leaving it out and saying so. It stays in sources.md and in the report's gathering record.
-        runner.jobs.upsert_paper(job["id"], p["key"], status="skipped",
-                                 provenance={**(runner.jobs.get_paper(job["id"], p["key"]).get("provenance") or {}),
-                                             "skipped_reason": f"too long: {n} parts (limit {limit})"})
-        runner.jobs.journal(job["id"], "acquire", f"Skipped \"{p['title']}\": {n} parts, over the {limit}-part limit "
-                                                  f"(about {n * PART_CHARS // 3000} pages).", task["key"])
-        return HandlerResult(True, f"{summary} It is {n} parts, over the {limit}-part limit, so it was left unread.")
+    # However long the paper is, it gets read: a part is one short task, so length costs time, not correctness.
+    if n > 20:
+        runner.jobs.journal(job["id"], "acquire", f"\"{p['title']}\" is long: {n} parts, about "
+                                                  f"{n * PART_CHARS // 3000} pages.", task["key"])
     warning = (runner.jobs.get_paper(job["id"], p["key"]).get("provenance") or {}).get("extraction_warning")
     return HandlerResult(True, f"{summary} Split into {n} part(s)." + (f" Warning: {warning}" if warning else ""))
 
@@ -960,7 +951,7 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
     quota = quota_for(c, round_)
     have = len([p for p in round_papers(runner, job, round_) if p["status"] == "read"])
     topups = sum(1 for t in runner.jobs.list_tasks(job["id"]) if t["key"].startswith(f"screen{round_}_t"))
-    if have < quota and topups < MAX_TOPUPS and len(read) < c["max_papers"]:
+    if have < quota and len(read) < c["max_papers"]:
         if expand_screen(runner, job, round_, task["key"], topup=topups + 1):
             runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers; looking for "
                                                       f"{quota - have} replacement(s).", task["key"])
@@ -1138,8 +1129,6 @@ DEEP_RESEARCH = register(DeepResearch(
         "seed_count": {"type": "string", "label": "Sources to gather in the first round", "default": "10"},
         "per_round": {"type": "string", "label": "Sources to gather in each later round", "default": "8"},
         "screen_batch": {"type": "string", "label": "Candidates per numbered list", "default": "15"},
-        "max_parts": {"type": "string", "label": "Ask before reading papers longer than (parts of ~4 pages)",
-                      "default": "12"},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },
     handlers={"find": handle_find, "acquire": handle_acquire, "next_pass": handle_next_pass, "digest": handle_digest,

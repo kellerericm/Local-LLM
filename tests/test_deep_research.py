@@ -292,6 +292,7 @@ def test_inputs_schema_lists_every_setting():
     schema = get_template("deep_research").inputs_schema
     assert {"seed_count", "per_round", "max_papers", "max_rounds", "screen_batch"} <= set(schema)
     assert "candidates_per_round" not in schema          # there is no pool: lists are searched out on demand
+    assert "max_parts" not in schema                     # papers are read however long they are
 
 
 def test_config_defaults_match_decisions():
@@ -351,9 +352,9 @@ def task_by_key(env, job, key):
     return next((t for t in env.jobs.list_tasks(job["id"]) if t["key"] == key), None)
 
 
-def test_full_text_fallback_and_long_papers_are_left_unread(env_factory, workspace):
-    """Europe PMC full text stands in for a PDF; a paper past the part limit is left out with a reason, because
-    nobody is there to be asked and half a paper read as if whole would be worse."""
+def test_full_text_fallback_and_long_papers_are_read_in_full(env_factory, workspace):
+    """Europe PMC full text stands in for a PDF, and a long paper is read however long it is: one part is one short
+    task, so length costs time, not correctness."""
     body = "\n\n".join(f"## Section {i}\n\n" + ("Replay text. " * 1000) for i in range(30))
     texts = {"Paper A": "# Paper A\n\n## Introduction\n\nShort paper about replay.\n\n## Methods\n\nRats.\n\n"
                         "## Discussion\n\n" + "More. " * 400 + "\n\n## References\n\nFoster DJ. 2006 Reverse replay.",
@@ -369,9 +370,10 @@ def test_full_text_fallback_and_long_papers_are_left_unread(env_factory, workspa
     assert (workspace / a["Paper A"]["provenance"]["folder"] / "references.txt").read_text(encoding="utf-8").count(
         "Foster") == 1
     assert task_by_key(env, job, "w0_1") is not None                     # reading tasks for A were added
-    assert a["Paper B"]["status"] == "skipped" and "too long" in a["Paper B"]["provenance"]["skipped_reason"]
-    assert task_by_key(env, job, "p0_2_1") is None                       # and none for B
-    assert "too long" in (workspace / "sources.md").read_text(encoding="utf-8") or a["Paper B"]["status"] == "skipped"
+    parts = env.jobs.get_paper(job["id"], a["Paper B"]["key"])["provenance"]["parts"]
+    assert parts > 12                                                    # 30 sections: no part limit applies
+    assert task_by_key(env, job, f"p0_2_{parts}") is not None             # every part of B gets a reading task
+    assert a["Paper B"]["status"] == "reading"
 
 
 def test_no_papers_read_fails_the_job_instead_of_writing_an_empty_report(env_factory, workspace):

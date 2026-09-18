@@ -500,7 +500,6 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     c = cfg(job)
     pass_ = int(task["params"]["pass"])
     quota = int(task["params"]["quota"])
-    lists_shown = int((task["params"] or {}).get("lists") or 1)
     by_number = {number_of(p): p for p in round_papers(runner, job, pass_)}
     wanted = list(dict.fromkeys(int(n) for n in keep))
     require_network(runner, job, task, "Fetch the papers chosen from the candidate list")
@@ -533,7 +532,6 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
 
     if have >= quota:
         return "\n".join(lines) + "\nThis round is finished. Call complete_task now."
-    runner.jobs.update_task(task["id"], params={**task["params"], "lists": lists_shown + 1})
     text = next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota)
     if text is None:
         return "\n".join(lines) + ("\nEvery search for this round is now exhausted, so no more candidates exist. "

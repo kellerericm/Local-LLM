@@ -177,8 +177,9 @@ This round needs {quota} papers. Each call returns a fresh numbered list, search
 are gathered, so there is no reason to keep a paper you doubt: another list is always available. Numbers never change,
 so you can still keep one from an earlier list. Don't think about links, files, or whether a paper can be downloaded:
 that is handled for you, and a paper that turns out to be unavailable is replaced automatically. If nothing in a list
-is relevant, call keep_sources with an empty list to see the next one. When the tool says the round is finished, call
-complete_task with a sentence on what you kept and why."""
+is relevant, call keep_sources with an empty list to see the next one. The newest list is always in candidates.md
+if you need to look at it again. When the tool says the round is finished, call complete_task with a sentence on what
+you kept and why."""
 
 # A round ends when it has the sources it asked for, or when every search it has is exhausted. Nothing else caps
 # it: the job's own budget (hours and steps) is what bounds a run, and max_papers and max_rounds are the user's.
@@ -490,6 +491,24 @@ def verify_source(runner, job, task, p: dict) -> tuple[bool, str]:
     return True, url
 
 
+def screen_unfinished(runner, job, task) -> str | None:
+    """Called when the model tries to finish a screening round. None lets it finish: the round has its sources, or
+    there is nothing left to look at. Otherwise the next list comes back and the round goes on."""
+    c = cfg(job)
+    pass_ = int(task["params"]["pass"])
+    quota = int(task["params"]["quota"])
+    have = len(selected_in(runner, job, pass_))
+    if have >= quota:
+        return None
+    undecided = [p for p in round_papers(runner, job, pass_, "candidate")]
+    text = (candidate_list(undecided, pass_, have, quota) if undecided else
+            next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota))
+    if text is None:
+        return None                    # every search for this round is exhausted; finishing short is honest
+    return (f"Not finished yet: this round has {have} of the {quota} papers it needs. Keep more from this list with "
+            f"keep_sources, or send an empty list to see the next one.\n\n{text}")
+
+
 def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     """One turn of the selection loop, run by the keep_sources tool.
 
@@ -566,8 +585,7 @@ def expand_screen(runner, job, pass_: int, after: str, topup: int = 0) -> bool:
         "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": c["screen_batch"], "lists": 1},
         "instructions": SCREEN.format(question=job["goal"], list=text, quota=quota),
         "done_when": f"{quota} papers kept for this round, each with a copy the coordinator could fetch, or the "
-                     "searches for it exhausted",
-        "checks": [{"type": "sources_screened", "pass": pass_}]}])
+                     "searches for it exhausted"}])
     return True
 
 
@@ -1096,6 +1114,9 @@ class DeepResearch(Template):
 
     def on_keep_sources(self, runner, job, task, keep, note=""):
         return screen_keep(runner, job, task, keep, note)
+
+    def on_complete_task(self, runner, job, task):
+        return screen_unfinished(runner, job, task) if (task["params"] or {}).get("screen") else None
 
     def on_gate(self, runner, job, task, answer):
         if is_approval(answer):

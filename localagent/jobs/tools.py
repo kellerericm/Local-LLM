@@ -20,7 +20,18 @@ def propose_plan(ctx: ToolContext, tasks: list[dict]) -> ToolResult:
 
 
 def complete_task(ctx: ToolContext, summary: str) -> ToolResult:
-    ctx.conversation.result = {"kind": "complete", "summary": summary.strip()}
+    from .templates import get_template
+
+    conv = ctx.conversation
+    task = getattr(conv, "task", None)
+    if task is not None:
+        # A task whose work is counted (deep research's source rounds) can't be finished while the count is short
+        # and there is more to look at. The turn continues with what is still needed, rather than the task being
+        # failed afterwards and its work thrown away.
+        unfinished = get_template(conv.job["template"]).on_complete_task(conv.runner, conv.job, task)
+        if unfinished:
+            return ToolResult(unfinished)
+    conv.result = {"kind": "complete", "summary": summary.strip()}
     return ToolResult("Recorded. The task's checks will run now.", end_turn=True)
 
 

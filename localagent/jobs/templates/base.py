@@ -35,6 +35,10 @@ class Template:
     def on_task_done(self, runner, job: dict, task: dict) -> None:
         pass
 
+    def on_complete_task(self, runner, job: dict, task: dict) -> str | None:
+        """Return text to keep the turn going when a task isn't really finished, or None to let it finish."""
+        return None
+
     def on_keep_sources(self, runner, job: dict, task: dict, keep: list[int], note: str = "") -> str | None:
         """Handle the model keeping candidate sources by list number (deep research). Return the text to show it,
         or None when this template has no such loop."""

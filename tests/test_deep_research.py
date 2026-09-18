@@ -509,17 +509,6 @@ def test_two_rounds_screened_then_report(env_factory, workspace):
     assert "http" not in (workspace / "candidates.md").read_text(encoding="utf-8")
 
 
-def test_finishing_without_choosing_fails_the_check(env_factory, workspace):
-    """A screening task that never calls keep_sources hasn't done its job: the check sends it back."""
-    env = env_factory([call("complete_task", summary="Looked at the list and moved on."),
-                       call("keep_sources", keep=[1]),
-                       call("complete_task", summary="Kept the first paper this time.")])
-    env.runner.scholar = FakeScholar(workspace)
-    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
-    start(env, job)
-    screen = task_by_key(env, job, "screen0")
-    assert screen["attempts"] >= 1 and any("candidates decided" in g for g in screen["guidance"])
-    assert tick_until(env, job["id"], lambda: status_of(env, job, "screen0") == "done")
 
 
 class DeepScholar(FakeScholar):
@@ -590,3 +579,30 @@ def test_a_source_lost_while_reading_is_replaced(env_factory, workspace):
     rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
     assert rounds[-1]["read_this_round"] == rounds[-1]["quota"] == 1
     assert "dropped" in (workspace / "sources.md").read_text(encoding="utf-8")
+
+
+def test_a_round_cannot_be_finished_short_while_candidates_remain(env_factory, workspace):
+    """Trying to finish a round early doesn't end it and doesn't cost it its work: the turn goes on with what is
+    still needed and the next list, in the same task."""
+    env = env_factory([call("complete_task", summary="Looked at the list and moved on."),
+                       call("keep_sources", keep=[1]),
+                       call("complete_task", summary="Kept the first paper after all.")])
+    env.runner.scholar = DeepScholar(workspace, pages=2, per_page=3)
+    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
+    start(env, job)
+    screen = task_by_key(env, job, "screen0")
+    assert screen["attempts"] == 0 and screen["status"] == "done"       # never failed, never retried
+    assert len(selected(env, job, 0)) == 1                              # and it ended with the source it needed
+
+
+def test_a_round_may_finish_short_once_its_searches_are_spent(env_factory, workspace):
+    """The floor is 'keep looking', not 'invent papers': when nothing is left to look at, finishing short is
+    allowed and the shortfall is on the record."""
+    env = env_factory([call("keep_sources", keep=[1]),
+                       call("complete_task", summary="Only one paper could be found at all.")])
+    env.runner.scholar = DeepScholar(workspace, pages=1, per_page=1)
+    job = make_job(env, seeds="replay", seed_count="5", screen_batch="2")
+    start(env, job)
+    assert status_of(env, job, "screen0") == "done"
+    assert len(selected(env, job, 0)) == 1                              # 1 of the 5 asked for
+    assert "1 kept and reachable" in (workspace / "sources.md").read_text(encoding="utf-8")

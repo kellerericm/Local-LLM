@@ -35,6 +35,23 @@ while interaction supplies *new outside signal that corrects it*. Training a mod
 (Phase 4) should be trained on the external corpus and on the user's corrections, and never mainly on the agent's own
 notes and transcripts.
 
+### Independent error, not just different training (2026-09-18, from the user)
+The user's extension: people naturally produce differing perspectives to be corrected against, while frontier models
+were largely shaped by one culture, so a multi-model setup risks being one perspective sampled twice. Their
+conclusion: training should happen in concert with differently trained minds.
+
+The sharper form worth building on: what corrects is **uncorrelated error**, not difference of provenance. Models with
+similar pretraining corpora share blind spots and will agree confidently on the same mistake, so agreement between
+them is weak evidence. Independence has to come from a different data lineage, a different objective, or from
+something that isn't a model: a failing test, a 403, a quote that doesn't appear in the source, a score that doesn't
+move. This system's verbatim-quote check and machine checks are that kind of signal, and they may be the most
+valuable thing in it.
+
+Concrete experiment this codebase allows: the reviewer (`jobs/review.py`) is the same model in a fresh context, so it
+cannot catch errors its own training hides. Run the reviewer on a different family (Gemma or an older Llama instruct)
+over this run's write-ups and measure whether rejection quality and false-alarm rate change. Cost: a model swap at
+review time, or a smaller reviewer held alongside.
+
 Questions to answer with experiments, not argument:
 - Does a LoRA trained on this job's corpus lose general tool-use ability on `bench/tasks.py`? By how much?
 - Does mixing in general instruction data (what proportion?) prevent that, and at what cost to the specialism?

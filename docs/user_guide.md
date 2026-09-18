@@ -79,14 +79,16 @@ LocalAgent is an AI agent that runs entirely on your computer. You give it tasks
   **How sources are chosen.** The work is split between the coordinator and the model, so that each does what it is good at:
   - The **coordinator** searches, ranks the results, and hands the model a **numbered list** of candidates — title, authors, year, journal, how often the paper is cited, and its abstract. No links, ever.
   - The **model** replies with the numbers it wants: *keep 2, 5, 9*. It judges relevance only.
-  - The **coordinator** then goes and fetches each chosen paper to prove it actually exists and can be read. Anything that 403s, hands back a landing page instead of a PDF, or has no open copy is **dropped and replaced**, and a fresh numbered list goes back to the model until the round has as many real sources as you asked for.
-  - Nothing is offered twice. The same paper reached through a search, a Wikipedia citation and three reference lists is one entry.
+  - The **coordinator** then goes and fetches each chosen paper to prove it actually exists and can be read. Anything that 403s, hands back a landing page instead of a PDF, or has no open copy is **dropped**, and the coordinator **searches out a fresh list** — a new page of results, or the next works down the reference ranking — and asks again.
+  - **The number you ask for is a floor, not a ceiling on effort.** If you ask for 10 starting sources, the round keeps searching and asking until it has 10 papers it can actually read. It only settles for fewer if every search it has is genuinely exhausted, and then it says so in the journal and in `sources.md`.
+  - **A source lost later is replaced too.** If a paper passes the check but its text can't be fetched when reading starts, or it turns out to be longer than the reading limit, the round goes back to the model for a replacement before following any citations.
+  - Nothing is offered twice. The same paper reached through a search, a Wikipedia citation and three reference lists is one entry, and a number is never reused.
 
   This is why the model never emits a URL: a small model that invents a plausible link costs you a source, while the coordinator can simply try the link and see.
 
   1. **Where the first round's candidates come from** (*Start from*):
      - **A folder** of PDFs you already have. These skip searching and screening entirely and go straight to reading. Best for a topic where much of the literature is paywalled.
-     - **Search queries, one per line.** Each line is searched separately and fills its own share of the candidates, so five biology queries and five machine-learning ones give you five of each. One long sentence works badly: it matches common words like "machine learning" instead of your topic.
+     - **Search queries, one per line.** Each line is searched separately and contributes in turn, so five biology queries and five machine-learning ones keep both sides of a topic present; when more candidates are needed, every query is paged again. One long sentence works badly: it matches common words like "machine learning" instead of your topic.
      - **Wikipedia articles, one per line.** The job takes the works the article cites, which is a curated reading list. Specific articles ("Hippocampal replay", "Catastrophic interference") give much better candidates than broad ones ("Reinforcement learning").
      - **A pasted list** of titles, DOIs or arXiv links.
 

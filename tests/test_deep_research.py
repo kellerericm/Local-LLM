@@ -24,9 +24,11 @@ class FakeScholar:
         }
         self.downloads = []
 
-    def search(self, query, n=10, open_access=False, max_pages=4):
+    def search(self, query, n=10, open_access=False, max_pages=4, start_page=1):
         self.queries = getattr(self, "queries", []) + [query]
         self.open_access = open_access
+        if start_page > 1:                                 # a small index: one page of results per query
+            return []
         picks = {"replay": ("WA", "WB"), "consolidation": ("WB", "WC")}.get(query.strip(), ("WA", "WB", "WC"))
         return [self.works[k] for k in picks][:n]
 
@@ -83,6 +85,11 @@ def env_factory(store, settings, workspace):
 def keep(*numbers, summary="Kept the relevant papers."):
     """A screening task: choose by list number, then finish."""
     return [call("keep_sources", keep=list(numbers)), call("complete_task", summary=summary)]
+
+
+def selected(env, job, pass_):
+    return [p for p in env.jobs.list_papers(job["id"])
+            if (p["provenance"] or {}).get("pass") == pass_ and p["status"] in ("queued", "reading", "read")]
 
 
 def numbered(env, job):
@@ -248,7 +255,7 @@ def test_folder_seeds_skip_screening_and_use_extracted_references(env_factory, w
     env.runner.approve_plan(job["id"])
     assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") == "done")
     rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
-    assert rounds[0]["novel"] == 2 and rounds[0]["selected"] == 2               # both cited works are new
+    assert rounds[0]["novel"] == 2                                              # both cited works are new
     candidates = [p for p in env.jobs.list_papers(job["id"]) if (p["provenance"] or {}).get("pass") == 1]
     assert [c["title"] for c in candidates] == ["Shared Classic", "Only once"]  # most-cited first
     assert candidates[0]["key"] == work_key(title="Shared Classic", year=1990)
@@ -283,15 +290,15 @@ def test_split_paper_parts_at_headings_and_sets_references_aside():
 def test_inputs_schema_lists_every_setting():
     from localagent.jobs.templates import get_template
     schema = get_template("deep_research").inputs_schema
-    assert {"seed_count", "per_round", "max_papers", "max_rounds", "candidates_per_round",
-            "screen_batch"} <= set(schema)
+    assert {"seed_count", "per_round", "max_papers", "max_rounds", "screen_batch"} <= set(schema)
+    assert "candidates_per_round" not in schema          # there is no pool: lists are searched out on demand
 
 
 def test_config_defaults_match_decisions():
     from localagent.jobs.templates.deep_research import quota_for
     c = cfg({"inputs": {}})
     assert (c["max_papers"], c["max_rounds"], c["per_round"], c["seed_count"]) == (60, 4, 8, 10)
-    assert (c["candidates_per_round"], c["screen_batch"]) == (60, 15)
+    assert c["screen_batch"] == 15
     assert (quota_for(c, 0), quota_for(c, 1)) == (10, 8)
     assert pdf_path("oa:W1").startswith("papers/pdf/")
 
@@ -422,7 +429,8 @@ def test_query_seeds_run_one_search_per_line(env_factory, workspace):
     env.runner._tick()
     env.runner.approve_plan(job["id"])
     env.runner._tick()
-    assert fake.queries == ["replay", "consolidation"]
+    assert fake.queries[:2] == ["replay", "consolidation"]          # one search per line, in order
+    assert set(fake.queries) == {"replay", "consolidation"}         # then paged again, looking for more
     assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Paper B", "Paper C"]   # merged, no dupes
     assert all(p["status"] == "candidate" for p in env.jobs.list_papers(job["id"]))
     assert [(p["provenance"] or {}).get("found_by") for p in env.jobs.list_papers(job["id"])][0].startswith("search:")
@@ -446,7 +454,7 @@ def test_wikipedia_seeds_take_the_articles_cited_works(env_factory, workspace):
     fake = FakeScholar(workspace)
     env = env_factory([])
     env.runner.scholar = fake
-    job = make_job(env, seed_mode="wikipedia", seeds="Memory consolidation", candidates_per_round="2",
+    job = make_job(env, seed_mode="wikipedia", seeds="Memory consolidation", screen_batch="2",
                    open_access_only="no")
     env.runner._tick()
     env.runner.approve_plan(job["id"])
@@ -490,7 +498,7 @@ def test_two_rounds_screened_then_report(env_factory, workspace):
 
     assert tick_until(env, job["id"], lambda: status_of(env, job, "layout") is not None, limit=80)
     rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
-    assert len(rounds) == 2 and rounds[0]["selected"] == 2
+    assert len(rounds) == 2 and rounds[0]["read_this_round"] == rounds[0]["quota"] == 2
     assert "round limit" in rounds[-1]["stop"]
     read = {p["title"] for p in env.jobs.list_papers(job["id"]) if p["status"] == "read"}
     assert read == {"Paper A", "Paper B", "Foundation One", "Foundation Two"}
@@ -510,3 +518,73 @@ def test_finishing_without_choosing_fails_the_check(env_factory, workspace):
     screen = task_by_key(env, job, "screen0")
     assert screen["attempts"] >= 1 and any("candidates decided" in g for g in screen["guidance"])
     assert tick_until(env, job["id"], lambda: status_of(env, job, "screen0") == "done")
+
+
+class DeepScholar(FakeScholar):
+    """An index with more than one page of results, so a round can keep looking. Papers named in `no_download`
+    answer when the source is verified but fail when the text is actually fetched."""
+
+    def __init__(self, workspace, pages=3, per_page=4, no_download=()):
+        super().__init__(workspace)
+        self.no_download = set(no_download)
+        self.pages = {}
+        n = 0
+        for page in range(1, pages + 1):
+            works = []
+            for _ in range(per_page):
+                n += 1
+                works.append(Work(f"WD{n}", f"Deep paper {n}", 2000 + n, [f"Author {n}"],
+                                  oa_pdf_url=f"https://oa.example/D{n}.pdf", referenced_works=[]))
+            self.pages[page] = works
+        self.works.update({w.openalex_id: w for page in self.pages.values() for w in page})
+
+    def search(self, query, n=10, open_access=False, max_pages=4, start_page=1):
+        self.queries = getattr(self, "queries", []) + [f"{query}#p{start_page}"]
+        return self.pages.get(start_page, [])[:n]
+
+    def download_pdf(self, url, dest):
+        title = f"Deep paper {url.rsplit('/D', 1)[-1].removesuffix('.pdf')}"
+        if title in self.no_download:
+            return False
+        return super().download_pdf(url, dest)
+
+
+def test_a_round_keeps_searching_until_it_has_the_number_of_sources_asked_for(env_factory, workspace):
+    """The quota is a floor, not a ceiling on effort: rejections and unreachable papers make the coordinator search
+    out more lists rather than settle for fewer sources."""
+    fake = DeepScholar(workspace, pages=3, per_page=4)
+    env = env_factory([call("keep_sources", keep=[1]),          # one from list 1
+                       call("keep_sources", keep=[]),           # nothing in list 2
+                       call("keep_sources", keep=[5, 6]),       # two from list 3
+                       call("complete_task", summary="Kept three relevant papers.")])
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay", seed_count="3", screen_batch="2")
+    start(env, job)
+
+    assert len(selected(env, job, 0)) == 3                      # exactly what the round asked for
+    assert len(fake.queries) >= 3 and "#p2" in " ".join(fake.queries)   # it paged for more
+    assert len(numbered(env, job)) >= 6                         # at least three lists of two were shown
+    screen = task_by_key(env, job, "screen0")
+    assert screen["status"] == "done"
+
+
+def test_a_source_lost_while_reading_is_replaced(env_factory, workspace):
+    """A paper that answers at selection but fails when its text is fetched must not shrink the round: the round
+    goes back to the model for a replacement and ends with the number of papers it asked for."""
+    fake = DeepScholar(workspace, pages=2, per_page=4, no_download={"Deep paper 1"})
+    responses = (keep(1, summary="Deep paper 1 looks right.")           # verifies, then fails to download
+                 + keep(2, summary="Deep paper 2 instead.")             # the replacement
+                 + read_paper_responses(1))
+    env = env_factory(responses)
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2", max_rounds="0")
+    start(env, job)
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "screen0_t1") is not None, limit=30)
+
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0_t1") == "done", limit=60)
+    papers = {p["title"]: p["status"] for p in env.jobs.list_papers(job["id"])}
+    assert papers["Deep paper 1"] == "unavailable"              # lost after it was chosen
+    assert papers["Deep paper 2"] == "read"                     # and replaced
+    rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
+    assert rounds[-1]["read_this_round"] == rounds[-1]["quota"] == 1
+    assert "dropped" in (workspace / "sources.md").read_text(encoding="utf-8")

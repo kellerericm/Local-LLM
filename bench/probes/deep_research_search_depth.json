@@ -1,11 +1,11 @@
 {
   "seed_mode": "query",
   "seeds": "hippocampal replay memory consolidation\nsystems consolidation of memory during sleep\ncomplementary learning systems neocortex hippocampus\nsynaptic plasticity long-term potentiation memory storage\nhippocampal replay reinforcement learning agent planning\nprioritized experience replay\ncontinual learning catastrophic forgetting experience replay\nneural turing machine differentiable neural computer external memory\nMuZero mastering atari go chess by planning with a learned model",
-  "seed_count": "12",
-  "max_papers": "20",
-  "max_rounds": "3",
-  "per_round": "8",
+  "seed_count": "10",
+  "max_papers": "16",
+  "max_rounds": "1",
+  "per_round": "6",
+  "screen_batch": "15",
   "max_parts": "12",
-  "format": "md",
-  "screen_batch": "15"
+  "format": "md"
 }

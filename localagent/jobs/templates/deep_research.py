@@ -27,8 +27,7 @@ from .base import HandlerResult, Template, is_approval
 from .research_report import compile_report, find_sources, slug, workspace_of
 
 DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4, "per_round": 8, "seed_count": 10,
-            "candidates_per_round": 60, "screen_batch": 15, "max_parts": 12, "open_access_only": "yes",
-            "format": "md"}
+            "screen_batch": 15, "max_parts": 12, "open_access_only": "yes", "format": "md"}
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
@@ -103,8 +102,7 @@ SECTION_DIGEST_CHARS = 16_000
 
 def cfg(job: dict) -> dict:
     c = {**DEFAULTS, **{k: v for k, v in (job.get("inputs") or {}).items() if v not in (None, "")}}
-    for k in ("max_papers", "max_rounds", "per_round", "seed_count", "candidates_per_round", "screen_batch",
-              "max_parts"):
+    for k in ("max_papers", "max_rounds", "per_round", "seed_count", "screen_batch", "max_parts"):
         c[k] = int(c[k])
     return c
 
@@ -173,56 +171,243 @@ SCREEN = """Choose which of these papers to read, for this question: {question}
 
 Call keep_sources with the numbers of the ones worth reading, like keep_sources(keep=[2, 5, 9]). Judge from the title
 and abstract: keep a paper if it would give evidence, methods, or results bearing on the question, and leave out
-anything off-topic, duplicated, or too general to help. A few good papers beat a padded list.
+anything off-topic, duplicated, or too general to help.
 
-Each call returns a fresh numbered list with more candidates, until {quota} sources are gathered or the candidates run
-out. Numbers never change, so you can still keep an earlier one. Don't think about links, files, or whether a paper can
-be downloaded: that is handled for you, and a paper that turns out to be unavailable is replaced automatically. If
-nothing in a list is relevant, call keep_sources with an empty list to see the next one. When the tool tells you the
-search is finished, call complete_task with a sentence on what you kept and why."""
+This round needs {quota} papers. Each call returns a fresh numbered list, searched out for you, until {quota} of them
+are gathered, so there is no reason to keep a paper you doubt: another list is always available. Numbers never change,
+so you can still keep one from an earlier list. Don't think about links, files, or whether a paper can be downloaded:
+that is handled for you, and a paper that turns out to be unavailable is replaced automatically. If nothing in a list
+is relevant, call keep_sources with an empty list to see the next one. When the tool says the round is finished, call
+complete_task with a sentence on what you kept and why."""
 
-MAX_BATCHES = 8          # lists a screening task may be shown, so an indecisive run still ends
+MAX_LISTS = 20           # safety bound on lists per screening task, so a run can't page an index forever
+MAX_TOPUPS = 3           # times a round may go back for replacements after papers are lost during reading
+LOOKAHEAD = 2            # extra candidates fetched per slot, to rank a tranche before offering it
 
 
-def pool(runner, job, pass_: int, status: str | None = None) -> list[dict]:
-    """This pass's candidates, in the order the coordinator ranked them."""
-    out = [p for p in runner.jobs.list_papers(job["id"]) if (p.get("provenance") or {}).get("pass") == pass_
+def pass_of(p: dict) -> int | None:
+    return (p.get("provenance") or {}).get("pass")
+
+
+def number_of(p: dict) -> int:
+    return (p.get("provenance") or {}).get("number") or 0
+
+
+def round_papers(runner, job, pass_: int, status: str | None = None) -> list[dict]:
+    """Every candidate this round has shown the model, in list order."""
+    out = [p for p in runner.jobs.list_papers(job["id"]) if pass_of(p) == pass_
            and (status is None or p["status"] == status)]
-    return sorted(out, key=lambda p: (p.get("provenance") or {}).get("number") or 0)
+    return sorted(out, key=number_of)
 
 
 def selected_in(runner, job, pass_: int) -> list[dict]:
-    return [p for p in pool(runner, job, pass_) if p["status"] in ("queued", "reading", "read")]
+    """Sources this round still has: kept, being read, or read. Papers lost on the way out are not counted, which is
+    what makes a round go back for replacements."""
+    return [p for p in round_papers(runner, job, pass_) if p["status"] in ("queued", "reading", "read")]
 
 
-def register_candidates(runner, job, works: list, pass_: int, found_by: str = "") -> int:
-    """Add works to a pass's candidate pool, skipping anything the job has already seen. Deduplication is the
-    coordinator's job: the same paper arrives under different ids (OpenAlex, DOI, arXiv) and from several reference
-    lists at once, and the model must never be asked about it twice."""
+def cursor(job: dict, key: str, default=0):
+    return ((job.get("inputs") or {}).get("cursors") or {}).get(key, default)
+
+
+def set_cursor(runner, job: dict, key: str, value) -> dict:
+    inputs = {**(job.get("inputs") or {})}
+    inputs["cursors"] = {**(inputs.get("cursors") or {}), key: value}
+    runner.jobs.update_job(job["id"], inputs=inputs)
+    job["inputs"] = inputs
+    return job
+
+
+def seen_in_job(runner, job) -> tuple[set, set]:
     papers = runner.jobs.list_papers(job["id"])
-    seen_keys = {p["key"] for p in papers}
-    seen_titles = {normalize_title(p["title"]) for p in papers if p["title"]}
-    number = max([(p.get("provenance") or {}).get("number") or 0 for p in papers] or [0])
-    added = 0
-    for w in works:
-        title = normalize_title(w.title or "")
-        if w.key() in seen_keys or (title and title in seen_titles):
+    return ({p["key"] for p in papers}, {normalize_title(p["title"]) for p in papers if p["title"]})
+
+
+def seed_lines(c: dict, job: dict) -> list[str]:
+    return [l.strip() for l in str(c["seeds"] or job["goal"]).splitlines() if l.strip()]
+
+
+def search_more(runner, job, c: dict, need: int, seen: tuple[set, set]) -> list[tuple]:
+    """Next unseen search results, one page per query line per call, round robin so every query keeps contributing.
+    A query whose page comes back empty is marked finished; when all are finished the search is exhausted."""
+    client = scholar(runner)
+    oa_only = str(c["open_access_only"]).strip().lower() not in ("no", "false", "0", "")
+    out: list[tuple] = []
+    lines = seed_lines(c, job)
+    while len(out) < need:
+        alive = [l for l in lines if cursor(job, f"q:{l}", 1) > 0]
+        if not alive:
+            return out
+        for line in alive:
+            page = cursor(job, f"q:{line}", 1)
+            try:
+                works = client.search(line, 50, open_access=oa_only, start_page=page, max_pages=1)
+            except Exception as e:
+                runner.jobs.journal(job["id"], "sources", f"Search failed for \"{line[:50]}\" page {page}: {e}")
+                works = []
+            set_cursor(runner, job, f"q:{line}", page + 1 if works else -1)
+            fresh = [(w, f'search: "{line[:50]}"') for w in works
+                     if w.key() not in seen[0] and normalize_title(w.title or "") not in seen[1]]
+            for w, label in fresh:
+                seen[0].add(w.key())
+                seen[1].add(normalize_title(w.title or ""))
+            out += fresh
+            if len(out) >= need:
+                break
+    return out
+
+
+def wikipedia_more(runner, job, c: dict, need: int, seen: tuple[set, set]) -> list[tuple]:
+    """Walk the works each article cites, in article order, resolving them against the index as they are needed."""
+    client = scholar(runner)
+    oa_only = str(c["open_access_only"]).strip().lower() not in ("no", "false", "0", "")
+    out: list[tuple] = []
+    for article in seed_lines(c, job):
+        refs = cursor(job, f"wiki-refs:{article}", None)
+        if refs is None:
+            refs = client.wikipedia_references(article, limit=200)
+            set_cursor(runner, job, f"wiki-refs:{article}", refs)
+        at = cursor(job, f"wiki:{article}", 0)
+        while at < len(refs) and len(out) < need:
+            chunk = refs[at:at + max(need, 5)]
+            at += len(chunk)
+            for w in resolve_references(client, chunk, len(chunk), oa_only):
+                if w.key() in seen[0] or normalize_title(w.title or "") in seen[1]:
+                    continue
+                seen[0].add(w.key())
+                seen[1].add(normalize_title(w.title or ""))
+                out.append((w, f"cited by the article “{article[:50]}”"))
+        set_cursor(runner, job, f"wiki:{article}", at)
+        if len(out) >= need:
+            break
+    return out
+
+
+def list_more(runner, job, c: dict, need: int, seen: tuple[set, set]) -> list[tuple]:
+    """Walk the titles, DOIs and arXiv links the user pasted."""
+    client = scholar(runner)
+    lines = [l.strip() for l in str(c["seeds"]).splitlines() if l.strip()]
+    at = cursor(job, "list", 0)
+    out: list[tuple] = []
+    while at < len(lines) and len(out) < need:
+        line = lines[at]
+        at += 1
+        doi = re.search(r"10\.\d{4,9}/\S+", line)
+        arxiv = re.search(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)\s*([\w.\-/]+?)(?:v\d+)?(?:\.pdf)?$", line, re.I)
+        w = client.get_by_doi(doi.group(0).rstrip(".,")) if doi else None
+        if w is None and not arxiv:
+            w = client.find_by_title(line)
+        if w is None:
+            w = Work(None, line, arxiv_id=arxiv.group(1) if arxiv else None,
+                     oa_pdf_url=f"https://arxiv.org/pdf/{arxiv.group(1)}" if arxiv else None)
+        if w.key() in seen[0] or normalize_title(w.title or "") in seen[1]:
             continue
-        seen_keys.add(w.key())
-        if title:
-            seen_titles.add(title)
+        seen[0].add(w.key())
+        seen[1].add(normalize_title(w.title or ""))
+        out.append((w, "your list"))
+    set_cursor(runner, job, "list", at)
+    return out
+
+
+def ranked_references(runner, job) -> list[tuple[str, int, dict]]:
+    """Works cited by the papers read so far and not yet seen by this job, most cited by those papers first."""
+    papers = runner.jobs.list_papers(job["id"])
+    read = [p for p in papers if p["status"] == "read"]
+    seen_keys, seen_titles = seen_in_job(runner, job)
+    counts: dict[str, int] = {}
+    info: dict[str, dict] = {}
+    for p in read:
+        for key, meta in {k: m for k, m in reference_keys(p)}.items():
+            counts[key] = counts.get(key, 0) + 1
+            info.setdefault(key, meta)
+    novel = [(k, n, info.get(k, {})) for k, n in counts.items()
+             if k not in seen_keys and normalize_title((info.get(k) or {}).get("title") or "") not in seen_titles]
+    return sorted(novel, key=lambda t: -t[1])
+
+
+def references_more(runner, job, c: dict, need: int, seen: tuple[set, set]) -> list[tuple]:
+    """Next tranche of cited works for a depth round, resolved against the index. Ties on 'how many papers I read
+    cite this' are broken by how widely the work is cited overall, which only the lookup knows, so a tranche is
+    resolved and ranked before it is offered."""
+    client = scholar(runner)
+    # No cursor here: `ranked` already excludes everything the job has seen, and offering a candidate marks it seen,
+    # so the top of this list is always the next thing to offer, even as reading adds new reference lists.
+    ranked = ranked_references(runner, job)
+    at = 0
+    read_n = sum(1 for p in runner.jobs.list_papers(job["id"]) if p["status"] == "read")
+    out: list[tuple] = []
+    while at < len(ranked) and len(out) < need:
+        tranche = ranked[at:at + need * LOOKAHEAD]
+        at += len(tranche)
+        resolved = []
+        ids = [k[3:] for k, _, _ in tranche if k.startswith("oa:")]
+        by_id = {}
+        if ids:
+            try:
+                by_id = {f"oa:{w.openalex_id}": w for w in client.get_by_ids(list(dict.fromkeys(ids)))}
+            except Exception as e:
+                runner.jobs.journal(job["id"], "sources", f"Couldn't look up cited works: {e}")
+        for k, n, meta in tranche:
+            w = by_id.get(k)
+            if w is None and k.startswith("doi:"):
+                w = client.get_by_doi(k[4:])
+            if w is None and meta.get("title"):
+                w = client.find_by_title(meta["title"], meta.get("year"))
+            if w is None:
+                w = Work(None, meta.get("title") or k, meta.get("year"), doi=meta.get("doi"),
+                         arxiv_id=meta.get("arxiv"),
+                         oa_pdf_url=f"https://arxiv.org/pdf/{meta['arxiv']}" if meta.get("arxiv") else None)
+            resolved.append((n, w))
+        resolved.sort(key=lambda t: (-t[0], -(t[1].cited_by_count or 0)))
+        for n, w in resolved:
+            if w.key() in seen[0] or normalize_title(w.title or "") in seen[1]:
+                continue
+            seen[0].add(w.key())
+            seen[1].add(normalize_title(w.title or ""))
+            out.append((w, f"cited by {n} of the {read_n} papers read"))
+    return out
+
+
+def fetch_more(runner, job, pass_: int, need: int) -> list[tuple]:
+    """Ask this round's source for the next `need` works the job has never seen. Empty means the source is spent:
+    every query paged out, every reference followed. There is no candidate pool — lists are searched out as the
+    model asks for them, so a round can always go back for more."""
+    c = cfg(job)
+    seen = seen_in_job(runner, job)
+    job = runner.jobs.get_job(job["id"])
+    if pass_ > 0:
+        return references_more(runner, job, c, need, seen)
+    if c["seed_mode"] == "folder":                      # a fixed set of local files: nothing to search for
+        return []
+    if c["seed_mode"] == "query":
+        return search_more(runner, job, c, need, seen)
+    if c["seed_mode"] == "wikipedia":
+        return wikipedia_more(runner, job, c, need, seen)
+    return list_more(runner, job, c, need, seen)
+
+
+def register_candidates(runner, job, works: list[tuple], pass_: int) -> list[dict]:
+    """Record works as this round's next numbered entries. Numbers are unique for the whole job and never reused, so
+    the model can keep one it passed over earlier."""
+    papers = runner.jobs.list_papers(job["id"])
+    number = max([number_of(p) for p in papers] or [0])
+    numbered_already = {p["key"] for p in papers if number_of(p)}
+    added = []
+    for w, found_by in works:
+        if w.key() in numbered_already:                 # already offered once; a number is never reused
+            continue
+        numbered_already.add(w.key())
         number += 1
-        added += 1
         register_work(runner, job, w, pass_, status="candidate")
-        runner.jobs.upsert_paper(job["id"], w.key(), provenance={
+        added.append(runner.jobs.upsert_paper(job["id"], w.key(), provenance={
             "pass": pass_, "number": number, "found_by": found_by, "abstract": (w.abstract or "")[:1200],
-            "venue": w.venue, "cited_by_count": w.cited_by_count})
+            "venue": w.venue, "cited_by_count": w.cited_by_count, "shown": True}))
     return added
 
 
 def candidate_list(batch: list[dict], pass_: int, have: int, quota: int) -> str:
-    first, last = batch[0]["provenance"]["number"], batch[-1]["provenance"]["number"]
-    lines = [f"## Candidate papers {first}-{last} (round {pass_}; {have} of {quota} sources gathered so far)", ""]
+    lines = [f"## Candidate papers {number_of(batch[0])}-{number_of(batch[-1])} "
+             f"(round {pass_}; {have} of {quota} sources gathered so far)", ""]
     for p in batch:
         prov = p.get("provenance") or {}
         authors = ", ".join(p["authors"][:3]) + (" et al." if len(p["authors"]) > 3 else "")
@@ -230,7 +415,7 @@ def candidate_list(batch: list[dict], pass_: int, have: int, quota: int) -> str:
         if prov.get("cited_by_count"):
             bits.append(f"cited {prov['cited_by_count']:,} times")
         found_by = f" [{prov['found_by']}]" if prov.get("found_by") else ""
-        lines.append(f"{prov['number']}. **{p['title']}** — {'; '.join(bits)}{found_by}")
+        lines.append(f"{number_of(p)}. **{p['title']}** — {'; '.join(bits)}{found_by}")
         abstract = re.sub(r"\s+", " ", prov.get("abstract") or "").strip()
         lines.append("   " + (abstract[:600] + ("…" if len(abstract) > 600 else "") if abstract
                               else "(no abstract available)"))
@@ -238,47 +423,49 @@ def candidate_list(batch: list[dict], pass_: int, have: int, quota: int) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def next_batch(runner, job, pass_: int, size: int) -> list[dict]:
-    """The next candidates to show, marked shown so a retry or a later batch never repeats them."""
-    batch = [p for p in pool(runner, job, pass_, "candidate") if not (p.get("provenance") or {}).get("shown")][:size]
-    for p in batch:
-        runner.jobs.upsert_paper(job["id"], p["key"], provenance={**p["provenance"], "shown": True})
-    return [runner.jobs.get_paper(job["id"], p["key"]) for p in batch]
-
-
-def show_batch(runner, job, pass_: int, size: int, quota: int) -> str | None:
-    """Write the next numbered list to candidates.md and return it; None when the pool is used up."""
-    batch = next_batch(runner, job, pass_, size)
-    if not batch:
+def next_list(runner, job, pass_: int, size: int, quota: int) -> str | None:
+    """Search out the next numbered list and write it to candidates.md. None only when the source is spent."""
+    works: list[tuple] = []
+    keys: set[str] = set()
+    while len(works) < size:
+        # Nothing is registered until the list is complete, so this loop has to remember what it already holds:
+        # otherwise a source that can't fill a whole list keeps handing back the same works.
+        fresh = [(w, label) for w, label in fetch_more(runner, job, pass_, size - len(works)) if w.key() not in keys]
+        if not fresh:
+            break
+        keys.update(w.key() for w, _ in fresh)
+        works += fresh
+    if not works:
         return None
+    batch = register_candidates(runner, job, works[:size], pass_)
     text = candidate_list(batch, pass_, len(selected_in(runner, job, pass_)), quota)
     (workspace_of(runner, job) / "candidates.md").write_text(text, encoding="utf-8")
+    runner.jobs.journal(job["id"], "sources", f"Round {pass_}: offered {len(batch)} candidate(s) "
+                                              f"(#{number_of(batch[0])}-#{number_of(batch[-1])}).")
     return text
 
 
 def write_sources_md(runner, job) -> None:
     """The coordinator's record of every source: where it came from, what was decided, and the URL it was fetched
     from. The model never emits or reads URLs; this file is for the user and for later runs."""
-    papers = sorted(runner.jobs.list_papers(job["id"]),
-                    key=lambda p: ((p.get("provenance") or {}).get("pass") or 0,
-                                   (p.get("provenance") or {}).get("number") or 0))
+    papers = sorted(runner.jobs.list_papers(job["id"]), key=lambda p: (pass_of(p) or 0, number_of(p)))
     lines = ["# Sources", "",
              "Every paper the model was shown and what happened when the coordinator went to fetch the ones it kept. "
              "Papers with no reachable copy were dropped and replaced automatically.", "",
              "| # | Round | Title | Year | Decision | Where it came from |", "|---|---|---|---|---|---|"]
     verdict = {"queued": "kept, waiting to be read", "reading": "kept, being read", "read": "read",
                "rejected": "not chosen by the model", "unavailable": "dropped: no reachable copy",
-               "skipped": "skipped", "candidate": "not shown"}
+               "skipped": "dropped: skipped", "candidate": "not shown"}
     for p in papers:
         prov = p.get("provenance") or {}
         where = prov.get("url") or prov.get("source") or prov.get("found_by") or ""
         title = str(p["title"]).replace("|", "\\|")[:110]
-        lines.append(f"| {prov.get('number') or ''} | {prov.get('pass', '')} | {title} | {p['year'] or ''} | "
+        lines.append(f"| {number_of(p) or ''} | {prov.get('pass', '')} | {title} | {p['year'] or ''} | "
                      f"{verdict.get(p['status'], p['status'])} | {where} |")
     kept = sum(1 for p in papers if p["status"] in ("queued", "reading", "read"))
-    dropped = sum(1 for p in papers if p["status"] == "unavailable")
+    dropped = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
     shown = sum(1 for p in papers if (p.get("provenance") or {}).get("shown"))
-    lines += ["", f"{shown} candidates shown to the model; {kept} kept and reachable; {dropped} dropped as unreachable."]
+    lines += ["", f"{shown} candidates shown to the model; {kept} kept and reachable; {dropped} dropped."]
     (workspace_of(runner, job) / "sources.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -306,14 +493,15 @@ def verify_source(runner, job, task, p: dict) -> tuple[bool, str]:
 def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     """One turn of the selection loop, run by the keep_sources tool.
 
-    The model sends list numbers only. The coordinator resolves them to papers, fetches each one to prove it exists,
-    drops what it can't reach, and hands back a fresh list until the quota is filled or the candidates run out.
+    The model sends list numbers. The coordinator resolves them to papers, fetches each one to prove it exists, drops
+    what it can't reach, and searches out a fresh list. It keeps going until the round has as many real sources as it
+    asked for, or until the source of candidates is genuinely spent.
     """
     c = cfg(job)
     pass_ = int(task["params"]["pass"])
     quota = int(task["params"]["quota"])
-    batches = int((task["params"] or {}).get("batches") or 1)
-    by_number = {(p.get("provenance") or {}).get("number"): p for p in pool(runner, job, pass_)}
+    lists_shown = int((task["params"] or {}).get("lists") or 1)
+    by_number = {number_of(p): p for p in round_papers(runner, job, pass_)}
     wanted = list(dict.fromkeys(int(n) for n in keep))
     require_network(runner, job, task, "Fetch the papers chosen from the candidate list")
 
@@ -327,33 +515,32 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
         (taken if ok else unreachable).append(p)
         runner.jobs.journal(job["id"], "sources",
                             f"{'Kept' if ok else 'Dropped'} #{n} \"{p['title'][:70]}\": {where}", task["key"])
-    for p in pool(runner, job, pass_, "candidate"):          # everything shown and not kept is decided
-        if (p.get("provenance") or {}).get("shown"):
-            runner.jobs.upsert_paper(job["id"], p["key"], status="rejected")
+    for p in round_papers(runner, job, pass_, "candidate"):        # everything shown and not kept is decided
+        runner.jobs.upsert_paper(job["id"], p["key"], status="rejected")
     write_sources_md(runner, job)
     runner._changed(job["id"])
 
     have = len(selected_in(runner, job, pass_))
     lines = []
     if taken:
-        lines.append(f"Kept {len(taken)}: " + "; ".join(f"#{(p['provenance'] or {}).get('number')} {p['title'][:60]}"
-                                                        for p in taken))
+        lines.append(f"Kept {len(taken)}: " + "; ".join(f"#{number_of(p)} {p['title'][:60]}" for p in taken))
     if unreachable:
-        lines.append(f"Dropped {len(unreachable)} with no reachable copy (replaced below): "
-                     + "; ".join(f"#{(p['provenance'] or {}).get('number')}" for p in unreachable))
+        lines.append(f"Dropped {len(unreachable)} with no reachable copy (being replaced): "
+                     + "; ".join(f"#{number_of(p)}" for p in unreachable))
     if ignored:
         lines.append(f"Not in the current list, ignored: {', '.join('#' + str(n) for n in ignored)}.")
     lines.append(f"{have} of {quota} sources gathered.")
 
     if have >= quota:
-        return "\n".join(lines) + "\nThe search is finished. Call complete_task now."
-    if batches >= MAX_BATCHES:
-        return "\n".join(lines) + (f"\nThat was the last list for this round ({MAX_BATCHES} shown). "
-                                   "Call complete_task now.")
-    runner.jobs.update_task(task["id"], params={**task["params"], "batches": batches + 1})
-    text = show_batch(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota)
+        return "\n".join(lines) + "\nThis round is finished. Call complete_task now."
+    if lists_shown >= MAX_LISTS:
+        return "\n".join(lines) + (f"\nThat was list {MAX_LISTS} for this round, the limit. Call complete_task now; "
+                                   "the job will go on with what it has.")
+    runner.jobs.update_task(task["id"], params={**task["params"], "lists": lists_shown + 1})
+    text = next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota)
     if text is None:
-        return "\n".join(lines) + "\nNo candidates are left for this round. Call complete_task now."
+        return "\n".join(lines) + ("\nEvery search for this round is now exhausted, so no more candidates exist. "
+                                   "Call complete_task now; the job will go on with what it has.")
     return "\n".join(lines) + "\n\n" + text
 
 
@@ -367,38 +554,52 @@ def _initial_plan(runner, job):
              "done_when": "candidate papers found and ranked"}]
 
 
-def expand_screen(runner, job, pass_: int, after: str) -> bool:
-    """Add the round's screening task, with the first numbered list in its instructions."""
+def expand_screen(runner, job, pass_: int, after: str, topup: int = 0) -> bool:
+    """Add a screening task for a round, with the first numbered list in its instructions. `topup` marks a second
+    visit to the same round, to replace papers lost after they were chosen."""
     c = cfg(job)
     quota = quota_for(c, pass_)
-    text = show_batch(runner, job, pass_, c["screen_batch"], quota)
+    text = next_list(runner, job, pass_, c["screen_batch"], quota)
     if text is None:
         return False
+    key = f"screen{pass_}_t{topup}" if topup else f"screen{pass_}"
+    have = len(selected_in(runner, job, pass_))
     runner.jobs.append_tasks(job["id"], [{
-        "key": f"screen{pass_}", "title": f"Round {pass_}: choose which papers to read", "depends_on": [after],
-        "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": c["screen_batch"], "batches": 1},
+        "key": key, "depends_on": [after],
+        "title": (f"Round {pass_}: choose {quota - have} replacement paper(s)" if topup
+                  else f"Round {pass_}: choose which papers to read"),
+        "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": c["screen_batch"], "lists": 1},
         "instructions": SCREEN.format(question=job["goal"], list=text, quota=quota),
-        "done_when": f"up to {quota} relevant papers kept, each with a copy the coordinator could fetch",
+        "done_when": f"{quota} papers kept for this round, each with a copy the coordinator could fetch, or the "
+                     "searches for it exhausted",
         "checks": [{"type": "sources_screened", "pass": pass_}]}])
     return True
 
 
 def expand_round(runner, job, round_: int) -> int:
-    ws = workspace_of(runner, job)
+    """Add reading tasks for the papers a round has just chosen. A round can do this more than once, when it went
+    back for replacements, so the keys carry a suffix and the paper numbering continues."""
     papers = [p for p in runner.jobs.list_papers(job["id"], "queued") if p["round"] == round_]
     if not papers:
         return 0
-    group = f"round{round_}"
-    tasks = [{"key": group, "title": f"Round {round_}: read {len(papers)} paper(s)", "instructions": "-", "done_when": "-"}]
-    for i, p in enumerate(papers, 1):
+    existing = {t["key"] for t in runner.jobs.list_tasks(job["id"])}
+    seq = 0
+    while (f"round{round_}" if not seq else f"round{round_}_t{seq}") in existing:
+        seq += 1
+    suffix = f"_t{seq}" if seq else ""
+    group = f"round{round_}{suffix}"
+    first = sum(1 for k in existing if k.startswith(f"a{round_}_")) + 1
+    tasks = [{"key": group, "title": f"Round {round_}: read {len(papers)} paper(s)", "instructions": "-",
+              "done_when": "-"}]
+    for i, p in enumerate(papers, first):
         # Reading tasks are added once the text is available and split into parts (see expand_paper).
         tasks.append({"key": f"a{round_}_{i}", "parent_key": group, "title": f"Get: {p['title'][:70]}", "kind": "code",
                       "handler": "acquire", "params": {"paper": p["key"], "round": round_, "index": i},
                       "instructions": "-", "done_when": "paper text available, split into parts, or skipped"})
         runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
-    tasks.append({"key": f"next_r{round_}", "title": f"Round {round_}: follow the citations", "kind": "code",
+    tasks.append({"key": f"next_r{round_}{suffix}", "title": f"Round {round_}: follow the citations", "kind": "code",
                   "handler": "next_pass", "depends_on": [group], "params": {"round": round_}, "instructions": "-",
-                  "done_when": "cited works ranked into the next round's candidates, or the search stopped"})
+                  "done_when": "replacements chosen, the next round started, or the search stopped"})
     runner.jobs.append_tasks(job["id"], tasks)
     runner.jobs.journal(job["id"], "plan", f"Round {round_}: added tasks to get and read {len(papers)} paper(s).")
     return len(papers)
@@ -640,48 +841,9 @@ def handle_section_digest(runner, job, task) -> HandlerResult:
 
 
 # ---------------------------------------------------------------- handlers
-def search_pool(runner, job, task) -> list[tuple]:
-    """Round 0's candidates: search results, an encyclopedia article's reference list, or a list the user pasted.
-    Returns (works, how they were found). One source per line, each filling its own share of the pool: a single long
-    sentence matches common words rather than the topic, and per-source quotas keep a topic's sides balanced (say
-    five biology queries and five machine-learning ones)."""
-    c = cfg(job)
-    client = scholar(runner)
-    mode, want = c["seed_mode"], c["candidates_per_round"]
-    oa_only = str(c["open_access_only"]).strip().lower() not in ("no", "false", "0", "")
-    if mode == "list":
-        works = []
-        for line in [l.strip() for l in str(c["seeds"]).splitlines() if l.strip()]:
-            doi = re.search(r"10\.\d{4,9}/\S+", line)
-            arxiv = re.search(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)\s*([\w.\-/]+?)(?:v\d+)?(?:\.pdf)?$", line, re.I)
-            w = client.get_by_doi(doi.group(0).rstrip(".,")) if doi else None
-            if w is None and not arxiv:
-                w = client.find_by_title(line)
-            if w is None:
-                w = Work(None, line, arxiv_id=arxiv.group(1) if arxiv else None,
-                         oa_pdf_url=f"https://arxiv.org/pdf/{arxiv.group(1)}" if arxiv else None)
-            works.append((w, "your list"))
-        return works
-    lines = [q.strip() for q in str(c["seeds"] or job["goal"]).splitlines() if q.strip()]
-    per_source = max(1, -(-want // len(lines)))
-    results, labels = [], []
-    for line in lines:
-        if mode == "query":
-            results.append(client.search(line, per_source, open_access=oa_only))
-            labels.append(f'search: "{line[:50]}"')
-        else:
-            results.append(resolve_references(client, client.wikipedia_references(line), per_source, oa_only))
-            labels.append(f"cited by the article \u201c{line[:50]}\u201d")
-    works = []
-    for rank in range(per_source):                     # round robin, so every query or article contributes
-        for found, label in zip(results, labels):
-            if rank < len(found):
-                works.append((found[rank], label))
-    return works
-
-
 def handle_find(runner, job, task) -> HandlerResult:
-    """Build round 0's candidate pool. Nothing is chosen here: the model does that in the screening task."""
+    """Start round 0. A folder of local papers goes straight to reading; otherwise there is nothing to do here but
+    check the network approval, because candidate lists are searched out one at a time as the model asks for them."""
     c = cfg(job)
     ws = workspace_of(runner, job)
     if c["seed_mode"] == "folder":                     # local PDFs: nothing to search for or fetch
@@ -696,14 +858,12 @@ def handle_find(runner, job, task) -> HandlerResult:
         write_sources_md(runner, job)
         return HandlerResult(True, f"Using {len(files)} paper(s) from {folder}/.")
     require_network(runner, job, task, f"Find candidate papers for: {c['seeds'] or job['goal']}")
-    works = search_pool(runner, job, task)
-    if not works:
-        return HandlerResult(False, "The search found no papers.", retry_guidance="Try a different query.")
-    added = 0
-    for w, found_by in works:
-        added += register_candidates(runner, job, [w], 0, found_by)
-    write_sources_md(runner, job)
-    return HandlerResult(True, f"Found {added} candidate paper(s) for round 0; the model chooses from them next.")
+    lines = seed_lines(c, job) if c["seed_mode"] != "list" else [l for l in str(c["seeds"]).splitlines() if l.strip()]
+    if not lines:
+        return HandlerResult(False, "No search queries, articles or titles were given.",
+                             retry_guidance="Set the job's seeds input.")
+    return HandlerResult(True, f"Ready to search {len(lines)} source(s) for round 0; "
+                               f"the model will choose from numbered lists as they are searched out.")
 
 
 def _ready(runner, job, task, p: dict, summary: str) -> HandlerResult:
@@ -783,34 +943,67 @@ def reference_keys(p: dict) -> list[tuple[str, dict]]:
 
 
 def handle_next_pass(runner, job, task) -> HandlerResult:
-    """Follow the citations: take the reference lists of the papers read so far, drop everything the job has already
-    seen, rank what is left by how many of those papers cite it, and put the top works up for the next round's
-    screening. Stops when nothing new comes back, or a limit is reached."""
+    """After a round's reading: replace any papers the round lost, then follow the citations into the next round.
+
+    A round is only done when it has read as many papers as it asked for, so a paper that couldn't be downloaded
+    after all, or was too long to read, sends the round back to choose a replacement. The next round's candidates are
+    the works cited by everything read so far, minus everything this job has already seen.
+    """
     c = cfg(job)
     ws = workspace_of(runner, job)
     round_ = int(task["params"]["round"])
     papers = runner.jobs.list_papers(job["id"])
     read = [p for p in papers if p["status"] == "read"]
+
+    # 1. Did this round keep what it set out to? Papers lost on the way out are replaced before anything else, even
+    # when that leaves nothing read yet: losing a paper must cost the round a replacement, not a source.
+    quota = quota_for(c, round_)
+    have = len([p for p in round_papers(runner, job, round_) if p["status"] == "read"])
+    topups = sum(1 for t in runner.jobs.list_tasks(job["id"]) if t["key"].startswith(f"screen{round_}_t"))
+    if have < quota and topups < MAX_TOPUPS and len(read) < c["max_papers"]:
+        if expand_screen(runner, job, round_, task["key"], topup=topups + 1):
+            runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers; looking for "
+                                                      f"{quota - have} replacement(s).", task["key"])
+            write_sources_md(runner, job)
+            return HandlerResult(True, f"Round {round_} read {have} of the {quota} papers it wanted; choosing "
+                                       f"{quota - have} replacement(s) before following the citations.")
+        runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers, and its searches "
+                                                  "are exhausted, so no replacement exists.", task["key"])
+
     if not read:
-        gathered = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
+        lost = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
         return HandlerResult(False, "No papers could be read", retry_guidance=(
-            f"None of the papers chosen so far could be read ({gathered} unavailable or skipped). The job cannot "
-            "write a report without sources: stop it and start again with a folder of PDFs, or a query whose "
-            "results are open access."))
-    known = {p["key"] for p in papers}
-    known_titles = {normalize_title(p["title"]) for p in papers if p["title"]}
+            f"None of the papers chosen so far could be read ({lost} unavailable or skipped), and no further "
+            "candidates could be found. The job cannot write a report without sources: stop it and start again with "
+            "a folder of PDFs, or queries whose results are open access."))
+
+    # Citation counts over everything read: they order the next round's candidates and fill the graph.
     counts: dict[str, int] = {}
     info: dict[str, dict] = {}
     for p in read:
         for key, meta in {k: m for k, m in reference_keys(p)}.items():
             counts[key] = counts.get(key, 0) + 1
             info.setdefault(key, meta)
-    for p in papers:                                   # how often the papers read cite papers we have
+    for p in papers:
         if p["key"] in counts:
             runner.jobs.upsert_paper(job["id"], p["key"], cited_by_read=counts[p["key"]])
-    novel = sorted(((k, n) for k, n in counts.items() if k not in known
-                    and normalize_title(info.get(k, {}).get("title") or "") not in known_titles),
-                   key=lambda kv: -kv[1])
+    known = {p["key"] for p in papers}
+    graph_ids = [k[3:] for k, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:GRAPH_ROWS]
+                 if k.startswith("oa:") and k not in known]
+    by_id: dict[str, Work] = {}
+    if graph_ids:
+        require_network(runner, job, task, f"Look up works cited by the papers read, after round {round_}")
+        try:
+            by_id = {f"oa:{w.openalex_id}": w for w in scholar(runner).get_by_ids(list(dict.fromkeys(graph_ids)))}
+        except Exception as e:
+            runner.jobs.journal(job["id"], "citations", f"Couldn't look up cited works: {e}", task["key"])
+    titles = {k: {"title": w.title, "year": w.year, "cited_by_count": w.cited_by_count} for k, w in by_id.items()}
+    _write_graph(ws, counts, {k: {**info.get(k, {}), **titles.get(k, {})} for k in set(info) | set(titles)},
+                 runner.jobs.list_papers(job["id"]))
+    write_sources_md(runner, job)
+
+    # 2. Follow the citations into the next round.
+    novel = ranked_references(runner, job)
     reason = None
     if len(read) >= c["max_papers"]:
         reason = f"reached the {c['max_papers']}-paper limit"
@@ -818,52 +1011,18 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
         reason = f"reached the {c['max_rounds']}-round limit"
     elif not novel:
         reason = f"no works cited by the {len(read)} papers read are new to this job"
-    added = 0
-    by_id: dict[str, Work] = {}
-    top = sorted(counts.items(), key=lambda kv: -kv[1])[:GRAPH_ROWS]
-    # Look up more than the pool holds: ties are broken by total citations, which only the lookup knows, so the
-    # shortlist can't be cut before that.
-    considered = novel[:max(c["candidates_per_round"], 50)]
-    lookup = [k[3:] for k, _ in ([] if reason else considered) + top if k.startswith("oa:") and k not in known]
-    if lookup or (not reason and any(k.startswith(("doi:", "t:")) for k, _ in considered)):
-        require_network(runner, job, task, f"Look up works cited by the papers read, for round {round_ + 1}")
-    if lookup:
-        try:
-            by_id = {f"oa:{w.openalex_id}": w for w in scholar(runner).get_by_ids(list(dict.fromkeys(lookup)))}
-        except Exception as e:
-            runner.jobs.journal(job["id"], "citations", f"Couldn't look up cited works: {e}", task["key"])
-    if not reason:
-        # Ties are common (every work cited by both of two papers): prefer works cited more widely overall.
-        considered.sort(key=lambda kv: (-kv[1], -((by_id.get(kv[0]) and by_id[kv[0]].cited_by_count) or 0)))
-        client = scholar(runner)
-        for k, n in considered[:c["candidates_per_round"]]:
-            meta = info.get(k, {})
-            w = by_id.get(k)
-            if w is None and k.startswith("doi:"):
-                w = client.get_by_doi(k[4:])
-            if w is None and meta.get("title"):
-                w = client.find_by_title(meta["title"], meta.get("year"))
-            if w is None:
-                w = Work(None, meta.get("title") or k, meta.get("year"), doi=meta.get("doi"), arxiv_id=meta.get("arxiv"),
-                         oa_pdf_url=f"https://arxiv.org/pdf/{meta['arxiv']}" if meta.get("arxiv") else None)
-            added += register_candidates(runner, job, [w], round_ + 1,
-                                         f"cited by {n} of the {len(read)} papers read")
-        if not added:
-            reason = "the works cited by the papers read are all ones this job has already seen"
-    titles = {k: {"title": w.title, "year": w.year, "cited_by_count": w.cited_by_count} for k, w in by_id.items()}
-    merged = {k: {**info.get(k, {}), **titles.get(k, {})} for k in set(info) | set(titles)}
-    _write_graph(ws, counts, merged, runner.jobs.list_papers(job["id"]))
-    write_sources_md(runner, job)
-    rounds = (job.get("inputs") or {}).get("citation_rounds") or []
-    entry = {"round": round_, "read": len(read), "novel": len(novel), "selected": added}
+    fresh = runner.jobs.get_job(job["id"]) or job
+    rounds = (fresh.get("inputs") or {}).get("citation_rounds") or []
+    entry = {"round": round_, "read": len(read), "read_this_round": have, "quota": quota, "novel": len(novel)}
     if reason:
         entry["stop"] = reason
     rounds.append(entry)
-    runner.jobs.update_job(job["id"], inputs={**(job.get("inputs") or {}), "citation_rounds": rounds})
+    runner.jobs.update_job(job["id"], inputs={**(runner.jobs.get_job(job["id"]).get("inputs") or {}),
+                                              "citation_rounds": rounds})
     if reason:
         return HandlerResult(True, f"Stopping the literature search: {reason}. See citation_graph.md.")
-    return HandlerResult(True, f"Round {round_}: {len(read)} papers read cite {len(novel)} works this job hasn't seen; "
-                               f"put the top {added} up for round {round_ + 1}. See citation_graph.md.")
+    return HandlerResult(True, f"{len(read)} papers read so far; they cite {len(novel)} works this job hasn't seen. "
+                               f"Round {round_ + 1} will choose from them. See citation_graph.md.")
 
 
 GRAPH_ROWS = 40
@@ -937,6 +1096,8 @@ class DeepResearch(Template):
         elif key.startswith("next_r"):
             rounds = (runner.jobs.get_job(job["id"])["inputs"] or {}).get("citation_rounds") or []
             last = rounds[-1] if rounds else {}
+            if not rounds or rounds[-1].get("round") != int(params["round"]):
+                return                      # this round went back for replacements; it decides again afterwards
             if last.get("stop"):
                 expand_report(runner, job, last["stop"])
             elif not expand_screen(runner, job, int(params["round"]) + 1, key):
@@ -976,8 +1137,6 @@ DEEP_RESEARCH = register(DeepResearch(
         "max_rounds": {"type": "string", "label": "Max citation rounds", "default": "4"},
         "seed_count": {"type": "string", "label": "Sources to gather in the first round", "default": "10"},
         "per_round": {"type": "string", "label": "Sources to gather in each later round", "default": "8"},
-        "candidates_per_round": {"type": "string", "label": "Candidates to offer the model per round",
-                                 "default": "60"},
         "screen_batch": {"type": "string", "label": "Candidates per numbered list", "default": "15"},
         "max_parts": {"type": "string", "label": "Ask before reading papers longer than (parts of ~4 pages)",
                       "default": "12"},

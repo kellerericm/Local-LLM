@@ -196,12 +196,13 @@ class ScholarClient:
             self._last = time.time()
             return json.loads(r.read().decode("utf-8"))
 
-    def search(self, query: str, n: int = 10, open_access: bool = False, max_pages: int = 4) -> list[Work]:
-        """Ranked search. With open_access, ask OpenAlex for open works only and keep paging until n of them look
-        obtainable (a host we can actually download from), so a quota is filled rather than truncated."""
+    def search(self, query: str, n: int = 10, open_access: bool = False, max_pages: int = 4,
+               start_page: int = 1) -> list[Work]:
+        """Ranked search. With open_access, ask OpenAlex for open works only. `start_page` continues a search the
+        caller has already walked, so selection can keep asking for more results instead of re-reading the top."""
         filters = "type:article|preprint|review" + (",open_access.is_oa:true" if open_access else "")
         out: list[Work] = []
-        for page in range(1, max_pages + 1):
+        for page in range(start_page, start_page + max_pages):
             data = self._get(f"{OPENALEX}/works", {"search": query, "per-page": 50, "page": page, "filter": filters})
             results = data.get("results", [])
             if not results:

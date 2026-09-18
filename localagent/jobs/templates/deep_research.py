@@ -752,6 +752,9 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
         refs = REFS_NONE_FOUND
     tasks.append({"key": f"w{r}_{i}", "parent_key": group, "title": f"Write-up and value: {p['title'][:60]}",
                   "depends_on": part_keys, "review": True, "params": {"paper": p["key"], "assemble": True},
+                  # Reviewed writing converges slowly, and a failed write-up costs the paper's reference list, which
+                  # is what the next round is built from (user's call, 2026-09-18).
+                  "max_attempts": REVIEWED_ATTEMPTS,
                   "instructions": ASSEMBLE.format(title=p["title"], summaries=", ".join(summaries), source=p["file_path"],
                                                   md=md, question=job["goal"], references=refs),
                   "done_when": f"{md} has section summaries, key claims citing notes, and a value assessment; "

@@ -452,6 +452,19 @@ def test_reviewed_report_tasks_get_more_attempts(env_factory, workspace):
     assert tasks["section_digest"]["max_attempts"] == 3          # code tasks keep the default
 
 
+def test_paper_write_ups_get_the_same_attempts_as_reviewed_writing(env_factory, workspace):
+    """A write-up that runs out of attempts costs the paper's reference list, and with it that paper's contribution
+    to the next round."""
+    from localagent.jobs.templates.deep_research import REVIEWED_ATTEMPTS
+    env = env_factory(keep(1, summary="Paper A is relevant here."))
+    env.runner.scholar = FakeScholar(workspace)
+    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
+    start(env, job)
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "w0_1") is not None)
+    assert task_by_key(env, job, "w0_1")["max_attempts"] == REVIEWED_ATTEMPTS
+    assert task_by_key(env, job, "p0_1_1")["max_attempts"] == 3      # part reading keeps the default
+
+
 def test_wikipedia_seeds_take_the_articles_cited_works(env_factory, workspace):
     fake = FakeScholar(workspace)
     env = env_factory([])

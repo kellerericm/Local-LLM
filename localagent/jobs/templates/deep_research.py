@@ -100,17 +100,32 @@ DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with 
 SECTION_DIGEST_CHARS = 16_000
 
 
+UNLIMITED = ("all", "none", "no limit", "unlimited", "exhaustive", "0", "-1")
+
+
+def limit(value) -> int | None:
+    """A limit the user set, or None for 'keep going until there is nothing left'. Written as a number, or as
+    'all' / 'none' / 'exhaustive'."""
+    if value is None or str(value).strip().lower() in UNLIMITED:
+        return None
+    return max(1, int(value))
+
+
 def cfg(job: dict) -> dict:
     c = {**DEFAULTS, **{k: v for k, v in (job.get("inputs") or {}).items() if v not in (None, "")}}
-    for k in ("max_papers", "max_rounds", "per_round", "seed_count", "screen_batch"):
-        c[k] = int(c[k])
+    for k in ("max_papers", "max_rounds", "per_round", "seed_count"):
+        c[k] = limit(c[k])
+    c["screen_batch"] = max(1, int(c["screen_batch"]))            # how many fit in one list, not a limit on work
     return c
 
 
-def quota_for(c: dict, pass_: int) -> int:
-    """Sources wanted from a round: the seed count for round 0, then the per-round count, never more than the job's
-    total paper limit allows."""
-    return max(1, min(c["seed_count"] if pass_ == 0 else c["per_round"], c["max_papers"]))
+def quota_for(c: dict, pass_: int) -> int | None:
+    """How many sources a round is after: the seed count for round 0, then the per-round count. None means every
+    relevant paper the searches can turn up, and the total paper limit (if the user set one) still applies."""
+    want = c["seed_count"] if pass_ == 0 else c["per_round"]
+    if want is None or c["max_papers"] is None:
+        return want if c["max_papers"] is None else min(want, c["max_papers"])
+    return min(want, c["max_papers"])
 
 
 def scholar(runner) -> ScholarClient:
@@ -173,9 +188,8 @@ Call keep_sources with the numbers of the ones worth reading, like keep_sources(
 and abstract: keep a paper if it would give evidence, methods, or results bearing on the question, and leave out
 anything off-topic, duplicated, or too general to help.
 
-This round needs {quota} papers. Each call returns a fresh numbered list, searched out for you, until {quota} of them
-are gathered, so there is no reason to keep a paper you doubt: another list is always available. Numbers never change,
-so you can still keep one from an earlier list. Don't think about links, files, or whether a paper can be downloaded:
+{target} Each call returns a fresh numbered list, searched out for you, so there is no reason to keep a paper you
+doubt: another list is always available. Numbers never change, so you can still keep one from an earlier list. Don't think about links, files, or whether a paper can be downloaded:
 that is handled for you, and a paper that turns out to be unavailable is replaced automatically. If nothing in a list
 is relevant, call keep_sources with an empty list to see the next one. The newest list is always in candidates.md
 if you need to look at it again. When the tool says the round is finished, call complete_task with a sentence on what
@@ -406,9 +420,9 @@ def register_candidates(runner, job, works: list[tuple], pass_: int) -> list[dic
     return added
 
 
-def candidate_list(batch: list[dict], pass_: int, have: int, quota: int) -> str:
-    lines = [f"## Candidate papers {number_of(batch[0])}-{number_of(batch[-1])} "
-             f"(round {pass_}; {have} of {quota} sources gathered so far)", ""]
+def candidate_list(batch: list[dict], pass_: int, have: int, quota: int | None) -> str:
+    counted = f"{have} of {quota} sources gathered so far" if quota is not None else f"{have} sources gathered so far"
+    lines = [f"## Candidate papers {number_of(batch[0])}-{number_of(batch[-1])} (round {pass_}; {counted})", ""]
     for p in batch:
         prov = p.get("provenance") or {}
         authors = ", ".join(p["authors"][:3]) + (" et al." if len(p["authors"]) > 3 else "")
@@ -424,7 +438,7 @@ def candidate_list(batch: list[dict], pass_: int, have: int, quota: int) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def next_list(runner, job, pass_: int, size: int, quota: int) -> str | None:
+def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | None:
     """Search out the next numbered list and write it to candidates.md. None only when the source is spent."""
     works: list[tuple] = []
     keys: set[str] = set()
@@ -466,7 +480,17 @@ def write_sources_md(runner, job) -> None:
     kept = sum(1 for p in papers if p["status"] in ("queued", "reading", "read"))
     dropped = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
     shown = sum(1 for p in papers if (p.get("provenance") or {}).get("shown"))
-    lines += ["", f"{shown} candidates shown to the model; {kept} kept and reachable; {dropped} dropped."]
+    lines += ["", f"{shown} candidates shown to the model; {kept} kept and reachable; {dropped} dropped.", ""]
+    c = cfg(job)
+    lines += ["## What each round was after", "",
+              f"- Round 0: {c['seed_count'] if c['seed_count'] is not None else 'every relevant paper found'}",
+              f"- Later rounds: {c['per_round'] if c['per_round'] is not None else 'every relevant paper found'}",
+              f"- Papers in total: {c['max_papers'] if c['max_papers'] is not None else 'no limit'}",
+              f"- Citation rounds: {c['max_rounds'] if c['max_rounds'] is not None else 'no limit'}", ""]
+    for r in (job.get("inputs") or {}).get("citation_rounds") or []:
+        wanted = r["quota"] if r.get("quota") is not None else "every relevant paper"
+        lines.append(f"- Round {r['round']} read {r.get('read_this_round', '?')} of {wanted}"
+                     + (f"; search stopped — {r['stop']}" if r.get("stop") else ""))
     (workspace_of(runner, job) / "sources.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -496,16 +520,18 @@ def screen_unfinished(runner, job, task) -> str | None:
     there is nothing left to look at. Otherwise the next list comes back and the round goes on."""
     c = cfg(job)
     pass_ = int(task["params"]["pass"])
-    quota = int(task["params"]["quota"])
+    quota = task["params"]["quota"]
+    quota = int(quota) if quota is not None else None
     have = len(selected_in(runner, job, pass_))
-    if have >= quota:
+    if quota is not None and have >= quota:
         return None
     undecided = [p for p in round_papers(runner, job, pass_, "candidate")]
     text = (candidate_list(undecided, pass_, have, quota) if undecided else
             next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota))
     if text is None:
         return None                    # every search for this round is exhausted; finishing short is honest
-    return (f"Not finished yet: this round has {have} of the {quota} papers it needs. Keep more from this list with "
+    wanted = f"the {quota} papers it needs" if quota is not None else "every relevant paper it can find"
+    return (f"Not finished yet: this round has {have} and is after {wanted}. Keep more from this list with "
             f"keep_sources, or send an empty list to see the next one.\n\n{text}")
 
 
@@ -518,7 +544,8 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     """
     c = cfg(job)
     pass_ = int(task["params"]["pass"])
-    quota = int(task["params"]["quota"])
+    quota = task["params"]["quota"]
+    quota = int(quota) if quota is not None else None
     by_number = {number_of(p): p for p in round_papers(runner, job, pass_)}
     wanted = list(dict.fromkeys(int(n) for n in keep))
     require_network(runner, job, task, "Fetch the papers chosen from the candidate list")
@@ -547,9 +574,10 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
                      + "; ".join(f"#{number_of(p)}" for p in unreachable))
     if ignored:
         lines.append(f"Not in the current list, ignored: {', '.join('#' + str(n) for n in ignored)}.")
-    lines.append(f"{have} of {quota} sources gathered.")
+    lines.append(f"{have} of {quota} sources gathered." if quota is not None
+                 else f"{have} sources gathered so far; this round takes every relevant paper it can find.")
 
-    if have >= quota:
+    if quota is not None and have >= quota:
         return "\n".join(lines) + "\nThis round is finished. Call complete_task now."
     text = next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota)
     if text is None:
@@ -578,14 +606,19 @@ def expand_screen(runner, job, pass_: int, after: str, topup: int = 0) -> bool:
         return False
     key = f"screen{pass_}_t{topup}" if topup else f"screen{pass_}"
     have = len(selected_in(runner, job, pass_))
+    target = (f"This round needs {quota} papers, and has {have} so far." if quota is not None else
+              "This round takes every paper relevant to the question that can be found, so keep looking until the "
+              "lists run out.")
     runner.jobs.append_tasks(job["id"], [{
         "key": key, "depends_on": [after],
-        "title": (f"Round {pass_}: choose {quota - have} replacement paper(s)" if topup
+        "title": (f"Round {pass_}: choose replacement paper(s)" if topup
                   else f"Round {pass_}: choose which papers to read"),
         "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": c["screen_batch"], "lists": 1},
-        "instructions": SCREEN.format(question=job["goal"], list=text, quota=quota),
-        "done_when": f"{quota} papers kept for this round, each with a copy the coordinator could fetch, or the "
-                     "searches for it exhausted"}])
+        "instructions": SCREEN.format(question=job["goal"], list=text, target=target),
+        "done_when": (f"{quota} papers kept for this round, each with a copy the coordinator could fetch, or the "
+                      "searches for it exhausted" if quota is not None else
+                      "every relevant paper the searches can find is kept, each with a copy the coordinator "
+                      "could fetch")}])
     return True
 
 
@@ -775,11 +808,12 @@ def expand_sections(runner, job) -> None:
     papers = runner.jobs.list_papers(job["id"])
     rounds = (job.get("inputs") or {}).get("citation_rounds") or []
     read = [p for p in papers if p["status"] == "read"]
-    facts = (f"{len(read)} papers read over {len(rounds)} citation round(s), starting from "
-             f"{sum(1 for p in papers if p['round'] == 0)} seed paper(s) ({cfg(job)['seed_mode']} seeds); "
-             f"{len(runner.jobs.list_notes(job['id']))} verified notes; "
-             f"{sum(1 for p in papers if p['status'] in ('unavailable', 'skipped'))} papers couldn't be obtained or "
-             f"were skipped. Search stop reason: {(rounds[-1].get('stop') if rounds else None) or 'not recorded'}. "
+    facts = (f"{len(read)} papers read over {len(rounds)} round(s), starting from "
+             f"{sum(1 for p in papers if (p.get('provenance') or {}).get('pass') == 0 and p['status'] == 'read')} "
+             f"paper(s) found by search ({cfg(job)['seed_mode']} seeds) and the rest followed from their reference "
+             f"lists; {len(runner.jobs.list_notes(job['id']))} verified notes; "
+             f"{sum(1 for p in papers if p['status'] in ('unavailable', 'skipped'))} chosen papers couldn't be "
+             f"obtained. Search stop reason: {(rounds[-1].get('stop') if rounds else None) or 'not recorded'}. "
              f"Papers read: " + "; ".join(f"{p['title']} ({p['year'] or 'n.d.'})" for p in read[:20]))
     tasks.append({"key": "abstract", "parent_key": "write", "title": "Write the abstract",
                   "max_attempts": REVIEWED_ATTEMPTS,
@@ -967,7 +1001,9 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
     quota = quota_for(c, round_)
     have = len([p for p in round_papers(runner, job, round_) if p["status"] == "read"])
     topups = sum(1 for t in runner.jobs.list_tasks(job["id"]) if t["key"].startswith(f"screen{round_}_t"))
-    if have < quota and len(read) < c["max_papers"]:
+    room = c["max_papers"] is None or len(read) < c["max_papers"]
+    # With no target, the round already took everything the searches had, so there is nothing left to replace with.
+    if quota is not None and have < quota and room:
         if expand_screen(runner, job, round_, task["key"], topup=topups + 1):
             runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers; looking for "
                                                       f"{quota - have} replacement(s).", task["key"])
@@ -1012,12 +1048,12 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
     # 2. Follow the citations into the next round.
     novel = ranked_references(runner, job)
     reason = None
-    if len(read) >= c["max_papers"]:
-        reason = f"reached the {c['max_papers']}-paper limit"
-    elif round_ + 1 > c["max_rounds"]:
-        reason = f"reached the {c['max_rounds']}-round limit"
+    if c["max_papers"] is not None and len(read) >= c["max_papers"]:
+        reason = f"your limit: {c['max_papers']} papers"
+    elif c["max_rounds"] is not None and round_ + 1 > c["max_rounds"]:
+        reason = f"your limit: {c['max_rounds']} citation rounds"
     elif not novel:
-        reason = f"no works cited by the {len(read)} papers read are new to this job"
+        reason = f"the literature converged: no work cited by the {len(read)} papers read is new to this job"
     fresh = runner.jobs.get_job(job["id"]) or job
     rounds = (fresh.get("inputs") or {}).get("citation_rounds") or []
     entry = {"round": round_, "read": len(read), "read_this_round": have, "quota": quota, "novel": len(novel)}
@@ -1063,10 +1099,15 @@ def handle_compile(runner, job, task) -> HandlerResult:
         lead = (authors if authors.endswith(".") else authors + ".") + " " if authors else ""
         lines.append(f"- {lead}{p['title']} ({p['year'] or 'n.d.'}).{ident}{cited}")
     lines += ["", "## How the literature was gathered", "",
-              f"{len(read)} papers were read over {len(rounds)} citation round(s)."]
+              f"{len(read)} papers were read over {len(rounds)} round(s). Each round searched for candidates, had "
+              "them judged for relevance, and fetched the chosen ones to confirm they could be read."]
     for r in rounds:
-        lines.append(f"- Round {r['round']}: {r['read']} read, follow threshold {r['threshold']}, "
-                     + (f"stopped: {r['stop']}" if r.get("stop") else f"{r.get('selected', 0)} cited works selected next"))
+        wanted = f"after {r['quota']}" if r.get("quota") is not None else "after every relevant paper"
+        lines.append(f"- Round {r['round']}: {wanted}, read {r.get('read_this_round', '?')}; "
+                     f"{r.get('novel', 0)} cited works were new to the job"
+                     + (f". Search stopped — {r['stop']}." if r.get("stop") else "."))
+    lines += ["", "Where a round read fewer papers than it was after, the searches for it were exhausted; where the "
+              "search stopped at a limit, the limit is named above."]
     if missing:
         lines += ["", "Papers that couldn't be obtained or were skipped:"] + [f"- {p['title']} ({p['year'] or 'n.d.'})"
                                                                             for p in missing]
@@ -1143,10 +1184,12 @@ DEEP_RESEARCH = register(DeepResearch(
                            "of titles/DOIs", "default": ""},
         "open_access_only": {"enum": ["yes", "no"], "label": "Search only for papers we can download",
                              "default": "yes"},
-        "max_papers": {"type": "string", "label": "Max papers read", "default": "60"},
-        "max_rounds": {"type": "string", "label": "Max citation rounds", "default": "4"},
-        "seed_count": {"type": "string", "label": "Sources to gather in the first round", "default": "10"},
-        "per_round": {"type": "string", "label": "Sources to gather in each later round", "default": "8"},
+        "max_papers": {"type": "string", "label": "Max papers read ('all' for no limit)", "default": "60"},
+        "max_rounds": {"type": "string", "label": "Max citation rounds ('all' for no limit)", "default": "4"},
+        "seed_count": {"type": "string", "label": "Sources to gather in the first round ('all' for every relevant "
+                                                  "paper the searches can find)", "default": "10"},
+        "per_round": {"type": "string", "label": "Sources to gather in each later round ('all' for every relevant "
+                                                 "paper found)", "default": "8"},
         "screen_batch": {"type": "string", "label": "Candidates per numbered list", "default": "15"},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },

@@ -501,7 +501,7 @@ def test_two_rounds_screened_then_report(env_factory, workspace):
     assert tick_until(env, job["id"], lambda: status_of(env, job, "layout") is not None, limit=80)
     rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
     assert len(rounds) == 2 and rounds[0]["read_this_round"] == rounds[0]["quota"] == 2
-    assert "round limit" in rounds[-1]["stop"]
+    assert rounds[-1]["stop"] == "your limit: 1 citation rounds"   # a stop always says whose limit it was
     read = {p["title"] for p in env.jobs.list_papers(job["id"]) if p["status"] == "read"}
     assert read == {"Paper A", "Paper B", "Foundation One", "Foundation Two"}
     sources = (workspace / "sources.md").read_text(encoding="utf-8")

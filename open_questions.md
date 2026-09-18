@@ -9,6 +9,38 @@ Directions to look into (unevaluated):
 - Per-project LoRA adapters trained on accumulated notes. This ties into the specialist-model systems (Phase 4).
 - Architectural memory modules (memory layers or key-value stores attached to the model's internals).
 
+### Why chunking, and what it costs (2026-09-18, from the user)
+The corpus can't be held in context in any functional way, so it is broken into pieces the model can come back to
+later: parts (~4 pages) → notes with verbatim quotes → FTS5 search → a size-capped digest for writing. That retrieval
+path is a crude external stand-in for attention over the whole corpus, and the cost is detail: what reaches the report
+is whatever survives the digest, while the full findings stay in `papers/*.md` and the notes table.
+
+Open: how much of the loss is the chunk size, how much the digest cap, and how much the 20k context (VRAM-bound).
+
+### Training as the analogue, and why it collapses (2026-09-18, from the user)
+The user's framing: a person reads a literature and adds it to what they already are; a fine-tuned model collapses
+toward its training topic and gets stuck, while the person keeps their general and social ability and carries the new
+findings like a module.
+
+Their hypothesis for why: people are trained by what they read **and** by interacting with other people and with
+other people's artifacts, and that continuing outside signal is what keeps them from being trapped in one subject.
+
+This has a direct ML analogue worth testing rather than assuming: rehearsal/replay (mixing general-domain data into
+specialist training) is the standard defence against catastrophic forgetting, and hippocampal replay during sleep is
+the biological version of the same move. Both halves of the current deep-research topic are about exactly this.
+
+The part the analogue doesn't cover, and which may be the real point: replay rehearses what the model already has,
+while interaction supplies *new outside signal that corrects it*. Training a model on its own generations degrades it
+(model collapse); training on other people's artifacts does not. If that distinction holds, a specialist adapter
+(Phase 4) should be trained on the external corpus and on the user's corrections, and never mainly on the agent's own
+notes and transcripts.
+
+Questions to answer with experiments, not argument:
+- Does a LoRA trained on this job's corpus lose general tool-use ability on `bench/tasks.py`? By how much?
+- Does mixing in general instruction data (what proportion?) prevent that, and at what cost to the specialism?
+- Self-generated notes vs. source text vs. user corrections: which mixture holds up on both benchmarks?
+- Is an adapter even the right container, versus keeping retrieval as the memory and never training at all?
+
 ## Tool-call reliability of small local models
 How much coordinator scaffolding (argument repair, retries, constrained decoding) is needed before an 8–14B model follows multi-step task lists reliably? The model benchmark should answer this.
 

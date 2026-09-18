@@ -48,6 +48,21 @@ class FakeScholar:
     def candidate_pdf_urls(self, paper):
         return ["https://publisher.example/landing.html"] + ([paper["oa_pdf_url"]] if paper.get("oa_pdf_url") else [])
 
+    def pmc_fulltext_urls(self, paper):
+        return []
+
+    def probe(self, url, kind="pdf", timeout=20):
+        return not url.endswith(".html")                   # publisher landing pages answer with HTML, not a paper
+
+    def locate(self, paper):
+        self.located = getattr(self, "located", []) + [paper["title"]]
+        for url in self.candidate_pdf_urls(paper):
+            if self.probe(url):
+                return url, "pdf"
+        for url in self.pmc_fulltext_urls(paper):
+            return url, "pmc"
+        return None
+
     def full_text(self, paper):
         return None
 
@@ -65,8 +80,23 @@ def env_factory(store, settings, workspace):
     return lambda responses, **kw: Env(store, settings, workspace, responses, **kw)
 
 
+def keep(*numbers, summary="Kept the relevant papers."):
+    """A screening task: choose by list number, then finish."""
+    return [call("keep_sources", keep=list(numbers)), call("complete_task", summary=summary)]
+
+
+def numbered(env, job):
+    """What the model was last shown: {list number: title}."""
+    out = {}
+    for paper in env.jobs.list_papers(job["id"]):
+        prov = paper.get("provenance") or {}
+        if prov.get("shown"):
+            out[prov["number"]] = paper["title"]
+    return out
+
+
 def make_job(env, **inputs):
-    base = {"seed_mode": "query", "seeds": "memory consolidation", "min_citations": "2", "min_fraction": "0.1"}
+    base = {"seed_mode": "query", "seeds": "memory consolidation"}
     return env.jobs.create_job(env.project["id"], "Memory review", "How do brains and models keep long-term memory?",
                                template="deep_research", inputs={**base, **inputs}, permissions=["net:open-access"])
 
@@ -108,50 +138,80 @@ def read_paper_responses(n, refs=None, quote="Text of https"):
     return out
 
 
-def test_query_seeds_gate_rounds_convergence_and_report_phase(env_factory, workspace):
-    fake = FakeScholar(workspace)
-    responses = read_paper_responses(4)                   # A, B read in round 0 (C unavailable -> skipped); F1, F2 in round 1
-    env = env_factory(responses)
-    env.runner.scholar = fake
-    job = make_job(env)
+def start(env, job, screen_responses=None):
+    """Run the plan and the first screening task."""
     env.runner._tick()                                     # template plan
     env.runner.approve_plan(job["id"])
-    env.runner._tick()                                     # seed (code)
-    seeds = env.jobs.list_papers(job["id"])
-    assert [p["title"] for p in seeds] == ["Paper A", "Paper B", "Paper C"]
-    assert (workspace / "seeds.md").exists()
-    env.runner._tick()                                     # gate opens
-    gate = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "seed_gate")
-    env.runner.answer(job["id"], "approve", gate["id"])
-    keys = [t["key"] for t in env.jobs.list_tasks(job["id"])]
-    assert "a0_1" in keys and "a0_3" in keys and "cite_r0" in keys and not any(k.startswith("p0_") for k in keys)
+    env.runner._tick()                                     # find0: build the candidate pool
+    env.runner._tick()                                     # screen0: the model chooses
+    return job
 
-    # Paper C has no open-access copy: its acquire task asks the user; answer skip.
-    assert tick_until(env, job["id"], lambda: any(t["key"] == "a0_3" and t["status"] == "waiting_user"
-                                                  for t in env.jobs.list_tasks(job["id"])))
-    a03 = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "a0_3")
-    assert "No open-access copy" in a03["question"]
-    env.runner.answer(job["id"], "skip", a03["id"])
 
-    assert tick_until(env, job["id"], lambda: any(t["key"] == "cite_r0" and t["status"] == "done"
-                                                  for t in env.jobs.list_tasks(job["id"])))
-    tasks = {t["key"]: t for t in env.jobs.list_tasks(job["id"])}
-    assert tasks["p0_1_1"]["status"] == "done" and tasks["w0_1"]["depends_on"] == ["p0_1_1"]
-    assert "p0_3_1" not in tasks                                           # skipped paper gets no reading tasks
-    rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
-    assert rounds[0]["read"] == 2 and rounds[0]["selected"] == 2           # F1 and F2 cited by both A and B
-    assert {p["title"] for p in env.jobs.list_papers(job["id"], "reading")} == {"Foundation One", "Foundation Two"}
+def test_model_chooses_by_number_and_the_coordinator_verifies_and_refills(env_factory, workspace):
+    """The core loop: the model keeps list numbers, the coordinator fetches each one to prove it exists, drops what
+    it can't reach, and offers a fresh list until the quota is filled."""
+    fake = FakeScholar(workspace)
+    # Paper C has no reachable copy: keeping it must cost a replacement, not a source.
+    env = env_factory([call("keep_sources", keep=[1, 3]),           # Paper A (ok) and Paper C (unreachable)
+                       call("keep_sources", keep=[2]),              # then Paper B from the refill
+                       call("complete_task", summary="Kept A and B; C had no copy.")])
+    env.runner.scholar = fake
+    job = make_job(env, seed_count="2", screen_batch="3")      # the default query returns A, B and C
+    start(env, job)
 
-    assert tick_until(env, job["id"], lambda: any(t["key"] == "layout" for t in env.jobs.list_tasks(job["id"])))
-    rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
-    assert rounds[-1]["stop"].startswith("converged")
     papers = {p["title"]: p for p in env.jobs.list_papers(job["id"])}
-    assert papers["Paper C"]["status"] == "skipped" and papers["Foundation One"]["cited_by_read"] == 3
-    notes = env.jobs.search_notes(job["id"], "", None, 50)
-    assert notes and all(n["source"].startswith("papers/pdf/") and n["location"].startswith("part 1") for n in notes)
-    assert len(fake.downloads) == 4
-    graph = (workspace / "citation_graph.md").read_text(encoding="utf-8")
-    assert "Foundation One" in graph
+    assert papers["Paper A"]["status"] in ("queued", "reading")            # kept, and the round is under way
+    assert papers["Paper A"]["provenance"]["url"].endswith("A.pdf")
+    assert papers["Paper C"]["status"] == "unavailable" and papers["Paper C"]["provenance"]["unreachable"]
+    assert papers["Paper B"]["status"] in ("queued", "reading")
+    assert fake.located == ["Paper A", "Paper C", "Paper B"]        # only what the model kept was fetched
+
+    text = (workspace / "candidates.md").read_text(encoding="utf-8")
+    assert "http" not in text                                       # the model is never shown a URL
+    sources = (workspace / "sources.md").read_text(encoding="utf-8")
+    assert "dropped: no reachable copy" in sources and "oa.example/A.pdf" in sources
+    screen = task_by_key(env, job, "screen0")
+    assert screen["status"] == "done"
+    assert [t["key"] for t in env.jobs.list_tasks(job["id"]) if t["key"].startswith("a0_")] == ["a0_1", "a0_2"]
+
+
+def test_keeping_nothing_shows_the_next_list_then_ends_the_round(env_factory, workspace):
+    env = env_factory([call("keep_sources", keep=[]),               # nothing relevant in the first list
+                       call("keep_sources", keep=[3]),              # something from the list that followed
+                       call("complete_task", summary="Only the third one was on topic.")])
+    env.runner.scholar = FakeScholar(workspace)
+    job = make_job(env, seeds="replay\nconsolidation", seed_count="1", screen_batch="2")
+    start(env, job)
+    papers = {p["title"]: p["status"] for p in env.jobs.list_papers(job["id"])}
+    assert papers["Paper A"] == "rejected" and papers["Paper B"] == "rejected"
+    assert len(numbered(env, job)) == 3                              # keeping nothing brought a second list
+    assert papers["Paper C"] == "unavailable"                        # kept, but it has no copy anywhere
+    assert task_by_key(env, job, "screen0")["status"] == "done"
+
+
+def test_a_paper_is_never_offered_twice(env_factory, workspace):
+    """Deduplication is the coordinator's job: the same work arrives from several queries and reference lists."""
+    fake = FakeScholar(workspace)
+    env = env_factory([call("keep_sources", keep=[1]), call("complete_task", summary="One paper is enough here.")])
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay\nconsolidation", seed_count="1", screen_batch="9")
+    start(env, job)
+    shown = numbered(env, job)
+    assert sorted(shown.values()) == ["Paper A", "Paper B", "Paper C"]      # B is in both queries, listed once
+    assert sorted(shown) == [1, 2, 3]
+
+
+def test_unreachable_papers_are_dropped_without_asking(env_factory, workspace):
+    """The job runs unattended: a paper that answers at selection but not at download is dropped with a record."""
+    fake = NoPdfScholar(workspace)
+    env = env_factory(keep(1, summary="Kept Paper A, the only relevant one."))
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
+    start(env, job)
+    assert task_by_key(env, job, "a0_1") is not None
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "a0_1")["status"] == "done")
+    a = next(p for p in env.jobs.list_papers(job["id"]) if p["title"] == "Paper A")
+    assert a["status"] == "unavailable" and task_by_key(env, job, "a0_1")["question"] in (None, "")
 
 
 def test_network_requires_permission(env_factory):
@@ -163,12 +223,14 @@ def test_network_requires_permission(env_factory):
     env.runner._tick()
     env.runner.approve_plan(job["id"])
     env.runner._tick()
-    seed = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "seed")
-    assert seed["status"] == "waiting_user" and seed["waiting_kind"] == "approval"
+    find = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "find0")
+    assert find["status"] == "waiting_user" and find["waiting_kind"] == "approval"
     assert approver.requests[0]["keys"] == ["net:open-access"]
 
 
-def test_folder_seeds_use_extracted_references(env_factory, workspace):
+def test_folder_seeds_skip_screening_and_use_extracted_references(env_factory, workspace):
+    """Local PDFs need no searching, fetching or choosing: they go straight to reading, and their reference lists
+    still feed the next round's candidate list."""
     (workspace / "papers").mkdir()
     for name in ("one", "two"):
         make_pdf(workspace / "papers" / f"{name}.pdf", [f"Paper {name} about hippocampal replay."])
@@ -176,19 +238,21 @@ def test_folder_seeds_use_extracted_references(env_factory, workspace):
                  [{"title": "Shared Classic", "year": 1990}]]
 
     responses = read_paper_responses(2, ref_lists, quote="about hippocampal replay")
+    responses += keep(1, summary="The classic is worth reading.")
     env = env_factory(responses)
     env.runner.scholar = FakeScholar(workspace)
     job = env.jobs.create_job(env.project["id"], "R", "Q?", template="deep_research", permissions=["net:open-access"],
-                              inputs={"seed_mode": "folder", "seeds": "papers", "min_citations": "2", "max_rounds": "1"})
+                              inputs={"seed_mode": "folder", "seeds": "papers", "max_rounds": "1"})
     env.runner._tick()
-    assert [t["key"] for t in env.jobs.list_tasks(job["id"])] == ["seed"]       # folder mode: no seed gate
+    assert [t["key"] for t in env.jobs.list_tasks(job["id"])] == ["find0"]      # folder mode: no screening task
     env.runner.approve_plan(job["id"])
-    assert tick_until(env, job["id"], lambda: any(t["key"] == "cite_r0" and t["status"] == "done"
-                                                  for t in env.jobs.list_tasks(job["id"])))
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") == "done")
     rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
-    assert rounds[0]["candidates"] == 1 and rounds[0]["selected"] == 1          # only "Shared Classic" meets 2
-    queued = [p for p in env.jobs.list_papers(job["id"]) if p["round"] == 1]
-    assert queued[0]["title"] == "Shared Classic" and queued[0]["key"] == work_key(title="Shared Classic", year=1990)
+    assert rounds[0]["novel"] == 2 and rounds[0]["selected"] == 2               # both cited works are new
+    candidates = [p for p in env.jobs.list_papers(job["id"]) if (p["provenance"] or {}).get("pass") == 1]
+    assert [c["title"] for c in candidates] == ["Shared Classic", "Only once"]  # most-cited first
+    assert candidates[0]["key"] == work_key(title="Shared Classic", year=1990)
+    assert candidates[0]["provenance"]["found_by"] == "cited by 2 of the 2 papers read"
 
 
 def test_work_from_openalex_parses_fields():
@@ -219,12 +283,16 @@ def test_split_paper_parts_at_headings_and_sets_references_aside():
 def test_inputs_schema_lists_every_setting():
     from localagent.jobs.templates import get_template
     schema = get_template("deep_research").inputs_schema
-    assert {"seed_count", "min_fraction", "per_round", "max_papers", "max_rounds", "min_citations"} <= set(schema)
+    assert {"seed_count", "per_round", "max_papers", "max_rounds", "candidates_per_round",
+            "screen_batch"} <= set(schema)
 
 
 def test_config_defaults_match_decisions():
+    from localagent.jobs.templates.deep_research import quota_for
     c = cfg({"inputs": {}})
-    assert (c["max_papers"], c["max_rounds"], c["min_citations"], c["min_fraction"]) == (60, 4, 3, 0.15)
+    assert (c["max_papers"], c["max_rounds"], c["per_round"], c["seed_count"]) == (60, 4, 8, 10)
+    assert (c["candidates_per_round"], c["screen_batch"]) == (60, 15)
+    assert (quota_for(c, 0), quota_for(c, 1)) == (10, 8)
     assert pdf_path("oa:W1").startswith("papers/pdf/")
 
 
@@ -268,70 +336,61 @@ class NoPdfScholar(FakeScholar):
         return (text, "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1/fullTextXML") if text else None
 
 
-def start_query_job(env, **inputs):
-    job = make_job(env, **inputs)
-    env.runner._tick()
-    env.runner.approve_plan(job["id"])
-    env.runner._tick()
-    env.runner._tick()
-    gate = next(t for t in env.jobs.list_tasks(job["id"]) if t["key"] == "seed_gate")
-    env.runner.answer(job["id"], "approve", gate["id"])
-    return job
+def status_of(env, job, key):
+    return (task_by_key(env, job, key) or {}).get("status")
 
 
 def task_by_key(env, job, key):
     return next((t for t in env.jobs.list_tasks(job["id"]) if t["key"] == key), None)
 
 
-def test_full_text_fallback_and_long_paper_question(env_factory, workspace):
+def test_full_text_fallback_and_long_papers_are_left_unread(env_factory, workspace):
+    """Europe PMC full text stands in for a PDF; a paper past the part limit is left out with a reason, because
+    nobody is there to be asked and half a paper read as if whole would be worse."""
     body = "\n\n".join(f"## Section {i}\n\n" + ("Replay text. " * 1000) for i in range(30))
     texts = {"Paper A": "# Paper A\n\n## Introduction\n\nShort paper about replay.\n\n## Methods\n\nRats.\n\n"
                         "## Discussion\n\n" + "More. " * 400 + "\n\n## References\n\nFoster DJ. 2006 Reverse replay.",
              "Paper B": "# Paper B\n\n" + body}
-    env = env_factory([])
+    env = env_factory(keep(1, 2, summary="Both look relevant."))
     env.runner.scholar = NoPdfScholar(workspace, texts)
-    job = start_query_job(env, seed_count="2")
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "a0_2")["status"] == "waiting_user")
+    job = make_job(env, seeds="replay", seed_count="2", screen_batch="3")
+    start(env, job)
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "a0_2")["status"] == "done")
     a = {p["title"]: p for p in env.jobs.list_papers(job["id"])}
-    assert a["Paper A"]["file_path"].startswith("papers/text/") and a["Paper A"]["provenance"]["source"].startswith(
-        "open-access full text")
+    assert a["Paper A"]["file_path"].startswith("papers/text/")
+    assert a["Paper A"]["provenance"]["source"].startswith("open-access full text")
     assert (workspace / a["Paper A"]["provenance"]["folder"] / "references.txt").read_text(encoding="utf-8").count(
         "Foster") == 1
     assert task_by_key(env, job, "w0_1") is not None                     # reading tasks for A were added
-    q = task_by_key(env, job, "a0_2")["question"]
-    assert "is long" in q and "read all" in q
-    env.runner.answer(job["id"], "read all", task_by_key(env, job, "a0_2")["id"])
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "w0_2") is not None)
-    n = a["Paper B"]["provenance"] and env.jobs.get_paper(job["id"], a["Paper B"]["key"])["provenance"]["parts"]
-    assert n > 12 and task_by_key(env, job, f"p0_2_{n}") is not None
+    assert a["Paper B"]["status"] == "skipped" and "too long" in a["Paper B"]["provenance"]["skipped_reason"]
+    assert task_by_key(env, job, "p0_2_1") is None                       # and none for B
+    assert "too long" in (workspace / "sources.md").read_text(encoding="utf-8") or a["Paper B"]["status"] == "skipped"
 
 
-def test_no_papers_read_asks_before_writing_an_empty_report(env_factory, workspace):
-    env = env_factory([])
+def test_no_papers_read_fails_the_job_instead_of_writing_an_empty_report(env_factory, workspace):
+    env = env_factory(keep(1, 2, summary="Both look relevant."))
     env.runner.scholar = NoPdfScholar(workspace)
-    job = start_query_job(env, seed_count="2")
-    for key in ("a0_1", "a0_2"):
-        assert tick_until(env, job["id"], lambda: task_by_key(env, job, key)["status"] == "waiting_user")
-        env.runner.answer(job["id"], "skip", task_by_key(env, job, key)["id"])
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "cite_r0")["status"] == "waiting_user")
-    assert "No papers could be read" in task_by_key(env, job, "cite_r0")["question"]
+    job = make_job(env, seeds="replay", seed_count="2", screen_batch="3")
+    start(env, job)
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") in ("failed", "needs_help"))
     assert task_by_key(env, job, "layout") is None
-    env.runner.answer(job["id"], "continue", task_by_key(env, job, "cite_r0")["id"])
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "layout") is not None)
+    runs = [r for r in env.jobs.list_runs(job["id"]) if r["task_id"] == task_by_key(env, job, "next_r0")["id"]]
+    assert any("No papers could be read" in (r["summary"] or "") for r in runs)
 
 
 def test_citation_ties_prefer_widely_cited_works_and_graph_shows_titles(env_factory, workspace):
     fake = FakeScholar(workspace)
     fake.works["WF1"].cited_by_count, fake.works["WF2"].cited_by_count = 10, 900   # both cited by A and B
-    env = env_factory(read_paper_responses(2))
+    responses = keep(1, 2, summary="Both papers are relevant.") + read_paper_responses(2)
+    env = env_factory(responses)
     env.runner.scholar = fake
-    job = start_query_job(env, per_round="1", max_rounds="2")
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "a0_3")["status"] == "waiting_user")
-    env.runner.answer(job["id"], "skip", task_by_key(env, job, "a0_3")["id"])
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "cite_r0")["status"] == "done")
-    assert [p["title"] for p in env.jobs.list_papers(job["id"]) if p["round"] == 1] == ["Foundation Two"]
+    job = make_job(env, seeds="replay", seed_count="2", screen_batch="3", max_rounds="2")
+    start(env, job)
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") == "done")
+    offered = [p["title"] for p in env.jobs.list_papers(job["id"]) if (p["provenance"] or {}).get("pass") == 1]
+    assert offered == ["Foundation Two", "Foundation One"]              # the tie goes to the more-cited work first
     graph = (workspace / "citation_graph.md").read_text(encoding="utf-8")
-    assert "| 2 | Foundation Two | 2001 | 900 | queued |" in graph and "| 2 | Foundation One | 1998 | 10 | not read |" in graph
+    assert "| 2 | Foundation Two | 2001 | 900 |" in graph and "| 2 | Foundation One | 1998 | 10 |" in graph
     assert "oa:W" not in graph
 
 
@@ -361,10 +420,12 @@ def test_query_seeds_run_one_search_per_line(env_factory, workspace):
     env.runner.scholar = fake
     job = make_job(env, seeds="replay\nconsolidation", seed_count="4")
     env.runner._tick()
-    env.runner.approve_plan(env.jobs.get_job(job["id"])["id"])
+    env.runner.approve_plan(job["id"])
     env.runner._tick()
     assert fake.queries == ["replay", "consolidation"]
     assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Paper B", "Paper C"]   # merged, no dupes
+    assert all(p["status"] == "candidate" for p in env.jobs.list_papers(job["id"]))
+    assert [(p["provenance"] or {}).get("found_by") for p in env.jobs.list_papers(job["id"])][0].startswith("search:")
 
 
 def test_reviewed_report_tasks_get_more_attempts(env_factory, workspace):
@@ -385,12 +446,15 @@ def test_wikipedia_seeds_take_the_articles_cited_works(env_factory, workspace):
     fake = FakeScholar(workspace)
     env = env_factory([])
     env.runner.scholar = fake
-    job = make_job(env, seed_mode="wikipedia", seeds="Memory consolidation", seed_count="2", open_access_only="no")
+    job = make_job(env, seed_mode="wikipedia", seeds="Memory consolidation", candidates_per_round="2",
+                   open_access_only="no")
     env.runner._tick()
     env.runner.approve_plan(job["id"])
     env.runner._tick()
     assert fake.articles == ["Memory consolidation"]
-    assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Foundation One"]
+    papers = env.jobs.list_papers(job["id"])
+    assert [p["title"] for p in papers] == ["Paper A", "Foundation One"]
+    assert "cited by the article" in (papers[0]["provenance"] or {})["found_by"]
 
 
 def test_query_seeds_ask_for_open_access_by_default(env_factory, workspace):
@@ -402,3 +466,47 @@ def test_query_seeds_ask_for_open_access_by_default(env_factory, workspace):
     env.runner.approve_plan(job["id"])
     env.runner._tick()
     assert fake.open_access is True
+
+
+def test_two_rounds_screened_then_report(env_factory, workspace):
+    """End to end over two rounds: the model screens round 0, the papers it kept are read, their reference lists
+    become round 1's candidates for it to screen again, and the search stops when nothing new is left."""
+    fake = FakeScholar(workspace)
+    responses = (keep(1, 2, summary="Paper A and Paper B are on topic.")
+                 + read_paper_responses(2)                                  # A and B
+                 + keep(3, 4, summary="Both foundational works are worth reading.")
+                 + read_paper_responses(2))                                 # Foundation One and Two
+    env = env_factory(responses)
+    env.runner.scholar = fake
+    job = make_job(env, seeds="replay", seed_count="2", per_round="2", screen_batch="5", max_rounds="1")
+    start(env, job)
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "screen1") == "done", limit=60)
+
+    offered = {(p["provenance"] or {}).get("number"): p["title"]
+               for p in env.jobs.list_papers(job["id"]) if (p["provenance"] or {}).get("pass") == 1}
+    assert offered == {3: "Foundation One", 4: "Foundation Two"}            # numbering continues across rounds
+    assert all("cited by 2 of the 2 papers read" in (p["provenance"] or {}).get("found_by", "")
+               for p in env.jobs.list_papers(job["id"]) if (p["provenance"] or {}).get("pass") == 1)
+
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "layout") is not None, limit=80)
+    rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
+    assert len(rounds) == 2 and rounds[0]["selected"] == 2
+    assert "round limit" in rounds[-1]["stop"]
+    read = {p["title"] for p in env.jobs.list_papers(job["id"]) if p["status"] == "read"}
+    assert read == {"Paper A", "Paper B", "Foundation One", "Foundation Two"}
+    sources = (workspace / "sources.md").read_text(encoding="utf-8")
+    assert sources.count("| read |") == 0 or "read" in sources             # every decision is recorded
+    assert "http" not in (workspace / "candidates.md").read_text(encoding="utf-8")
+
+
+def test_finishing_without_choosing_fails_the_check(env_factory, workspace):
+    """A screening task that never calls keep_sources hasn't done its job: the check sends it back."""
+    env = env_factory([call("complete_task", summary="Looked at the list and moved on."),
+                       call("keep_sources", keep=[1]),
+                       call("complete_task", summary="Kept the first paper this time.")])
+    env.runner.scholar = FakeScholar(workspace)
+    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
+    start(env, job)
+    screen = task_by_key(env, job, "screen0")
+    assert screen["attempts"] >= 1 and any("candidates decided" in g for g in screen["guidance"])
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "screen0") == "done")

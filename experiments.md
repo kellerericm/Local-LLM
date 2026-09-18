@@ -3,6 +3,20 @@
 Experiments underway. Each entry: date, question, setup, status, results, conclusion.
 Move a finished experiment's conclusion into CLAUDE.md's design notes if it changes the design.
 
+## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
+- **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?
+- **Design (the user's, implemented this session):** search → show the model a numbered list (title, authors, year, venue, citation count, abstract; no URLs) → it replies with numbers → the coordinator fetches each one to prove it exists, drops what it can't reach, dedupes, and shows a fresh list until the round's quota is filled → read → build the next round from the reference lists of what was read, minus everything seen → repeat until nothing novel appears or the round limit is hit.
+- **Status:** built and unit-tested (21 tests in `tests/test_deep_research.py`, 160 in the suite). Not yet run end to end with the real model.
+- **Live check of the mechanical half** (`ScholarClient`, real OpenAlex and publishers):
+  - The candidate list carries real abstracts for 5/5 results and contains no URL.
+  - `locate()` proved a reachable copy for 5/5 papers, including one Nature article that the old host list would have accepted for the wrong reason and another that it would have rejected wrongly (see failed_tests.md).
+- **What changed in behaviour:**
+  - The user's seed-review pause is gone: the job runs unattended (user's decision, 2026-09-17).
+  - Papers that can't be fetched are dropped and replaced instead of parking the task with a question.
+  - Papers over the part limit are left unread and recorded as unread, instead of asking.
+  - A round that reads nothing now fails the job instead of writing a sourceless report.
+- **Still to measure:** whether a 9B model's keep/reject decisions beat the old citation-count rule on topic balance, and how much of a round's time selection costs. Needs the final-test rerun.
+
 ## 2026-09-13 — Python 3.14 compatibility of the GPU stack
 - **Question:** Does the ML stack work on the existing `local-llm` env (Python 3.14.7)?
 - **Setup:** torch 2.14.0+cu130, transformers 5.17.0, bitsandbytes 0.50.2, peft 0.20.0 on an RTX 4060 Ti 16 GB (driver 610.74).

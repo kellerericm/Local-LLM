@@ -30,6 +30,8 @@ class Work:
     referenced_works: list[str] = field(default_factory=list)   # OpenAlex ids (W...)
     cited_by_count: int | None = None
     pdf_urls: list[str] = field(default_factory=list)            # every open-access PDF location OpenAlex lists
+    abstract: str | None = None                                  # shown to the model when it screens candidates
+    venue: str | None = None
 
     def key(self) -> str:
         return work_key(self.openalex_id, self.doi, self.arxiv_id, self.title, self.year)
@@ -51,6 +53,14 @@ def work_key(openalex_id=None, doi=None, arxiv_id=None, title=None, year=None) -
 
 def _short_id(openalex_url: str | None) -> str | None:
     return openalex_url.rsplit("/", 1)[-1] if openalex_url else None
+
+
+def abstract_from_inverted(index: dict | None) -> str | None:
+    """OpenAlex stores abstracts as {word: [positions]}; put the words back in order."""
+    if not index:
+        return None
+    words: list[tuple[int, str]] = [(pos, word) for word, positions in index.items() for pos in (positions or [])]
+    return " ".join(w for _, w in sorted(words)[:400]) or None
 
 
 def work_from_openalex(d: dict) -> Work:
@@ -85,19 +95,24 @@ def work_from_openalex(d: dict) -> Work:
         oa_pdf_url=oa_pdf,
         referenced_works=[_short_id(w) for w in (d.get("referenced_works") or []) if w],
         cited_by_count=d.get("cited_by_count"),
+        abstract=abstract_from_inverted(d.get("abstract_inverted_index")),
+        venue=((d.get("primary_location") or {}).get("source") or {}).get("display_name"),
     )
 
 
-# Hosts that serve PDFs or full text to a script. Publisher sites (Wiley, ScienceDirect, Cell, Nature) return 403
-# even for open-access articles, so an "is_oa" flag alone doesn't mean we can read it (final test: 9 of 12 seeds lost).
+# Hosts that have served PDFs to a script in testing. Only a ranking hint for search results: `ScholarClient.locate`
+# is the authority, because it fetches the first bytes and looks at them. Publisher sites return 403 to scripts even
+# for open-access articles (final test: 9 of 12 seeds lost), and nature.com and jneurosci.org were both verified to
+# refuse us on 2026-09-17 despite hosting the OA PDF.
 OPEN_HOSTS = ("arxiv.org", "biorxiv.org", "medrxiv.org", "ncbi.nlm.nih.gov", "europepmc.org", "ebi.ac.uk",
-              "plos.org", "frontiersin.org", "mdpi.com", "elifesciences.org", "jneurosci.org", "pnas.org",
-              "openreview.net", "jmlr.org", "aaai.org", "neurips.cc", "mlr.press", "peerj.com", "nature.com/articles",
+              "plos.org", "frontiersin.org", "mdpi.com", "elifesciences.org",
+              "openreview.net", "jmlr.org", "aaai.org", "neurips.cc", "mlr.press", "peerj.com",
               "springeropen.com", "biomedcentral.com", "hindawi.com", "cogitatiopress.com", "osf.io")
 
 
 def obtainable(w: Work) -> bool:
-    """True when some open-access location is on a host that serves scripted downloads, or the work is in PMC."""
+    """True when some open-access location is on a host that has served scripted downloads. A hint for ordering
+    search results; whether a paper can really be read is decided by fetching it (`locate`)."""
     urls = [u for u in ([w.oa_pdf_url] + list(w.pdf_urls)) if u]
     return any(any(h in u.lower() for h in OPEN_HOSTS) for u in urls)
 
@@ -272,24 +287,30 @@ class ScholarClient:
                 pass
         return urls
 
-    def full_text(self, paper: dict) -> tuple[str, str] | None:
-        """Open-access full text as markdown from Europe PMC's REST API (JATS XML), for papers whose PDF hosts refuse
-        scripted downloads. Returns (markdown, url) or None."""
+    def pmc_fulltext_urls(self, paper: dict) -> list[str]:
+        """Europe PMC REST full-text URLs for a paper (open-access records only), without fetching them."""
         doi = paper.get("doi")
         query = f'DOI:"{doi}"' if doi else (f'TITLE:"{paper["title"]}"' if paper.get("title") else None)
         if not query:
-            return None
+            return []
         try:
             data = self._get("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
                              {"query": query, "format": "json", "resultType": "lite"})
         except Exception:
-            return None
+            return []
+        out = []
         for r in (data.get("resultList") or {}).get("result", []):
             if not (r.get("pmcid") and r.get("isOpenAccess") == "Y"):
                 continue
             if not doi and normalize_title(r.get("title", "")) != normalize_title(paper["title"]):
                 continue
-            url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{r['pmcid']}/fullTextXML"
+            out.append(f"https://www.ebi.ac.uk/europepmc/webservices/rest/{r['pmcid']}/fullTextXML")
+        return out
+
+    def full_text(self, paper: dict) -> tuple[str, str] | None:
+        """Open-access full text as markdown from Europe PMC's REST API (JATS XML), for papers whose PDF hosts refuse
+        scripted downloads. Returns (markdown, url) or None."""
+        for url in self.pmc_fulltext_urls(paper):
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/xml"})
                 with urllib.request.urlopen(req, timeout=60) as resp:
@@ -301,6 +322,34 @@ class ScholarClient:
                 continue
             if len(text) > 2000:
                 return text, url
+        return None
+
+    def probe(self, url: str, kind: str = "pdf", timeout: int = 20) -> bool:
+        """Fetch the first bytes of a URL and say whether they are the kind of document we expect. This is what
+        decides whether a source is real: publishers answer 403, or serve an HTML landing page where OpenAlex
+        promised a PDF, and an `is_oa` flag never shows it."""
+        accept = "application/pdf,*/*;q=0.8" if kind == "pdf" else "application/xml,*/*;q=0.8"
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept,
+                                                   "Range": "bytes=0-8191"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                head = r.read(8192)
+        except Exception:
+            return False
+        if kind == "pdf":
+            return head.startswith(b"%PDF")
+        return b"<article" in head[:8192].lower()
+
+    def locate(self, paper: dict) -> tuple[str, str] | None:
+        """The first location that actually hands us this paper: (url, kind), kind being 'pdf' or 'pmc'.
+        Every candidate is fetched far enough to see what it is, so an unreachable or non-paper URL is never
+        passed on as a source. Returns None when nothing serves it."""
+        for url in self.candidate_pdf_urls(paper):
+            if self.probe(url, "pdf"):
+                return url, "pdf"
+        for url in self.pmc_fulltext_urls(paper):
+            if self.probe(url, "xml"):
+                return url, "pmc"
         return None
 
     def wikipedia_references(self, article: str, limit: int = 60) -> list[dict]:

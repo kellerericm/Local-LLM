@@ -9,7 +9,8 @@ from ..tools.registry import ApprovalPending, Tool, ToolRegistry
 from . import prompts
 from .checks import describe
 from .scratchpad import render_block
-from .tools import (ADD_NOTE, CHECK_CITATIONS, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, PROPOSE_PLAN, RECORD_REFERENCES,
+from .tools import (ADD_NOTE, CHECK_CITATIONS, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER, KEEP_SOURCES, PROPOSE_PLAN,
+                    RECORD_REFERENCES,
                     SEARCH_NOTES, UPDATE_CHECKLIST, UPDATE_CONTEXT)
 
 READ_ONLY_TOOLS = ("read_file", "read_document", "list_dir", "glob", "grep")
@@ -162,7 +163,13 @@ class TaskSession(JobSession):
 
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
         # The plan replaces the chat task list; job ask_user replaces the chat one.
+        params = self.task.get("params") or {}
+        if params.get("screen"):
+            # Choosing sources is a judgement call on a list in the prompt: no files, no shell, nothing to wander into.
+            available = {t.name: t for t in registry.available(ctx)}
+            return ([available[n] for n in READ_ONLY_TOOLS if n in available]
+                    + [KEEP_SOURCES, UPDATE_CHECKLIST, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER])
         base = [t for t in registry.available(ctx) if t.name not in ("update_tasks", "ask_user")]
-        extra = [RECORD_REFERENCES] if (self.task.get("params") or {}).get("paper") else []
+        extra = [RECORD_REFERENCES] if params.get("paper") else []
         return base + [UPDATE_CHECKLIST, UPDATE_CONTEXT, ADD_NOTE, SEARCH_NOTES, CHECK_CITATIONS, *extra, COMPLETE_TASK, FAIL_TASK,
                        JOB_ASK_USER]

@@ -48,6 +48,8 @@ def describe(check: dict) -> str:
         return f"file {check.get('path')} cites at least {check.get('min', 1)} saved notes as [n12], all of which exist"
     if t == "references_recorded":
         return "the paper's reference list is recorded with record_references"
+    if t == "sources_screened":
+        return "every candidate paper you were shown has been kept or passed over with keep_sources"
     if t == "notes_for_source":
         return f"at least {check.get('min', 1)} note(s) saved from {check.get('source')}, or the summary says it's not relevant"
     return json.dumps(check)
@@ -56,10 +58,20 @@ def describe(check: dict) -> str:
 def run_checks(checks: list[dict], workspace: Path, env_path: Path, guard, policy,
                ask: Callable[[list[str], str, str], bool], cancel: threading.Event | None = None,
                notes: Callable[[], list[dict]] | None = None, summary: str = "",
-               paper: Callable[[str], dict | None] | None = None) -> list[CheckResult]:
+               paper: Callable[[str], dict | None] | None = None,
+               papers: Callable[[], list[dict]] | None = None) -> list[CheckResult]:
     results = []
     for c in checks:
         try:
+            if c.get("type") == "sources_screened":
+                shown = [p for p in (papers() if papers else [])
+                         if (p.get("provenance") or {}).get("pass") == c.get("pass")
+                         and (p.get("provenance") or {}).get("shown")]
+                undecided = [p for p in shown if p["status"] == "candidate"]
+                results.append(CheckResult(c, not undecided and bool(shown),
+                                           f"{len(shown) - len(undecided)} of {len(shown)} candidates decided"
+                                           if shown else "no candidates were shown"))
+                continue
             if c.get("type") == "references_recorded":
                 p = paper(c["paper"]) if paper else None
                 n = len(p["extracted_references"]) + len(p["meta_references"]) if p else 0

@@ -3,6 +3,19 @@
 Record failures here: date, what was run, what happened (exact error), suspected cause, status (open / fixed / won't fix).
 A failure is information, not a verdict.
 
+## 2026-09-17 — The "can we download it?" host list was wrong in both directions
+- **Run:** live check of the seeding fix from 54068d7 (`ScholarClient.search(open_access=True)` plus `obtainable()`), on the real OpenAlex index.
+- **What happened:** `obtainable()` passed every result, but the copies didn't exist:
+  - `https://www.nature.com/articles/nature04286.pdf` → not a PDF (HTML page)
+  - `https://www.jneurosci.org/content/jneuro/33/49/19373.full.pdf` → `HTTP Error 403: Forbidden`
+
+  Both hosts were in `OPEN_HOSTS`, and `docs/user_guide.md` said in the same commit that Nature refuses scripted downloads. So the filter meant to stop losing seeds passed straight through the hosts that lose them.
+- **And the other way:** `https://www.nature.com/articles/s41562-023-01799-z.pdf` (Nature Human Behaviour, 2024) downloads fine. Whether a publisher answers a script varies by article, not by host, so no list of hosts can be right.
+- **Cause:** availability was being predicted from metadata (an `is_oa` flag plus a hostname) instead of tested.
+- **Fix:** `ScholarClient.probe()` fetches the first 8 KB of a location and looks at the bytes (`%PDF`, or `<article` for Europe PMC JATS); `ScholarClient.locate()` walks every location for a paper and returns the first that really answers. The source-selection loop calls it on each paper the model keeps, and drops what doesn't answer. `OPEN_HOSTS` stays, demoted to a hint for ordering search results.
+- **Verified:** on 5 live papers for "hippocampal replay memory consolidation", `locate()` found a working copy for 5/5 (PLoS ×2, Nature Human Behaviour, arXiv, AAAI).
+- **Status:** fixed.
+
 ## 2026-09-16 — deep_research final test (long-term memory and planning): four failures, all fixed
 Run: `job_e2e --template deep_research --inputs-file bench/probes/deep_research_final.json`. Outcome in experiments.md.
 1. **Seeds were off-topic.** The goal as one long sentence matched "machine learning" and "review": the seeds were ML surveys on agriculture, fluid mechanics, materials science, and a strategy paper. The seed gate would have caught it, but the harness approves gates blindly.

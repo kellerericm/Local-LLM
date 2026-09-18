@@ -35,6 +35,11 @@ class Template:
     def on_task_done(self, runner, job: dict, task: dict) -> None:
         pass
 
+    def on_keep_sources(self, runner, job: dict, task: dict, keep: list[int], note: str = "") -> str | None:
+        """Handle the model keeping candidate sources by list number (deep research). Return the text to show it,
+        or None when this template has no such loop."""
+        return None
+
     def on_gate(self, runner, job: dict, task: dict, answer: str) -> str:
         """Decide a gate. Return 'approve' to continue, or 'revise' after reopening tasks with the user's feedback."""
         return "approve" if is_approval(answer) else "revise"

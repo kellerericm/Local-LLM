@@ -4,9 +4,9 @@
   "seed_count": "12",
   "max_papers": "20",
   "max_rounds": "3",
-  "min_citations": "3",
-  "min_fraction": "0.15",
   "per_round": "8",
   "max_parts": "12",
-  "format": "md"
+  "format": "md",
+  "candidates_per_round": "40",
+  "screen_batch": "15"
 }

@@ -211,6 +211,28 @@ def record_references(ctx: ToolContext, references: list[dict], paper: str = "")
     return ToolResult(f"Recorded {len(cleaned)} references for this paper.")
 
 
+def keep_sources(ctx: ToolContext, keep: list[int] | None = None, note: str = "") -> ToolResult:
+    """Keep candidate sources by list number. The coordinator resolves the numbers to papers, fetches each one to
+    prove it can be read, drops the rest, and returns the next numbered list."""
+    from .templates import get_template
+
+    conv = ctx.conversation
+    task = getattr(conv, "task", None)
+    if task is None or not (task.get("params") or {}).get("screen"):
+        return ToolResult("keep_sources only works in a task that is choosing sources from a numbered list.", ok=False)
+    numbers = []
+    for n in keep or []:
+        try:
+            numbers.append(int(n))
+        except (TypeError, ValueError):
+            return ToolResult(f"{n!r} is not a list number. Send the numbers from the list, like keep=[2, 5, 9].",
+                              ok=False)
+    text = get_template(conv.job["template"]).on_keep_sources(conv.runner, conv.job, task, numbers, note.strip())
+    if text is None:
+        return ToolResult("This job doesn't choose sources from a list.", ok=False)
+    return ToolResult(text)
+
+
 def job_ask_user(ctx: ToolContext, question: str) -> ToolResult:
     ctx.conversation.result = {"kind": "ask", "question": question.strip()}
     return ToolResult("Your question was sent to the user. This task will wait for the answer; other tasks continue.",
@@ -326,6 +348,17 @@ RECORD_REFERENCES = Tool(
         "paper": {"type": "string", "description": "paper key; defaults to your task's paper"}},
      "required": ["references"]},
     record_references, "job")
+
+KEEP_SOURCES = Tool(
+    "keep_sources",
+    "Keep the candidate papers worth reading, by their numbers in the list you were shown (keep=[2, 5, 9]). An empty "
+    "list means none of them are relevant. Numbers stay valid, so you can keep one from an earlier list. Returns "
+    "what was kept, what turned out to be unavailable, and the next numbered list.",
+    {"type": "object", "properties": {
+        "keep": {"type": "array", "items": {"type": "integer"}, "description": "list numbers to keep; [] for none"},
+        "note": {"type": "string", "description": "optional: why these, in a few words"}},
+     "required": ["keep"]},
+    keep_sources, "job", timeout_s=600)
 
 JOB_ASK_USER = Tool(
     "ask_user",

@@ -158,10 +158,9 @@ def test_model_chooses_by_number_and_the_coordinator_verifies_and_refills(env_fa
     """The core loop: the model keeps list numbers, the coordinator fetches each one to prove it exists, drops what
     it can't reach, and offers a fresh list until the quota is filled."""
     fake = FakeScholar(workspace)
-    # Paper C has no reachable copy: keeping it must cost a replacement, not a source.
-    env = env_factory([call("keep_sources", keep=[1, 3]),           # Paper A (ok) and Paper C (unreachable)
-                       call("keep_sources", keep=[2]),              # then Paper B from the refill
-                       call("complete_task", summary="Kept A and B; C had no copy.")])
+    # Paper C has no reachable copy, so it never reaches the list: the model judges relevance, not availability.
+    env = env_factory([call("keep_sources", keep=[1, 2]),
+                       call("complete_task", summary="Kept both readable papers.")])
     env.runner.scholar = fake
     job = make_job(env, seed_count="2", screen_batch="3")      # the default query returns A, B and C
     start(env, job)
@@ -170,8 +169,9 @@ def test_model_chooses_by_number_and_the_coordinator_verifies_and_refills(env_fa
     assert papers["Paper A"]["status"] in ("queued", "reading")            # kept, and the round is under way
     assert papers["Paper A"]["provenance"]["url"].endswith("A.pdf")
     assert papers["Paper C"]["status"] == "unavailable" and papers["Paper C"]["provenance"]["unreachable"]
+    assert not papers["Paper C"]["provenance"].get("shown")                # recorded, never presented
     assert papers["Paper B"]["status"] in ("queued", "reading")
-    assert fake.located == ["Paper A", "Paper C", "Paper B"]        # only what the model kept was fetched
+    assert fake.located == ["Paper A", "Paper B", "Paper C"]        # every candidate checked before presenting
 
     text = (workspace / "candidates.md").read_text(encoding="utf-8")
     assert "http" not in text                                       # the model is never shown a URL
@@ -180,19 +180,21 @@ def test_model_chooses_by_number_and_the_coordinator_verifies_and_refills(env_fa
     screen = task_by_key(env, job, "screen0")
     assert screen["status"] == "done"
     assert [t["key"] for t in env.jobs.list_tasks(job["id"]) if t["key"].startswith("a0_")] == ["a0_1", "a0_2"]
+    assert "Paper C" not in (workspace / "candidates.md").read_text(encoding="utf-8")
 
 
 def test_keeping_nothing_shows_the_next_list_then_ends_the_round(env_factory, workspace):
     env = env_factory([call("keep_sources", keep=[]),               # nothing relevant in the first list
-                       call("keep_sources", keep=[3]),              # something from the list that followed
-                       call("complete_task", summary="Only the third one was on topic.")])
+                       call("keep_sources", keep=[2]),              # something from the list that followed
+                       call("complete_task", summary="Only the second one was on topic.")])
     env.runner.scholar = FakeScholar(workspace)
-    job = make_job(env, seeds="replay\nconsolidation", seed_count="1", screen_batch="2")
+    job = make_job(env, seeds="replay\nconsolidation", seed_count="1", screen_batch="1")
     start(env, job)
     papers = {p["title"]: p["status"] for p in env.jobs.list_papers(job["id"])}
-    assert papers["Paper A"] == "rejected" and papers["Paper B"] == "rejected"
-    assert len(numbered(env, job)) == 3                              # keeping nothing brought a second list
-    assert papers["Paper C"] == "unavailable"                        # kept, but it has no copy anywhere
+    assert papers["Paper A"] == "rejected"
+    assert len(numbered(env, job)) == 2                              # keeping nothing brought the next list
+    assert papers["Paper B"] in ("queued", "reading")
+    assert papers["Paper C"] == "unavailable"                        # never shown: no copy anywhere
     assert task_by_key(env, job, "screen0")["status"] == "done"
 
 
@@ -204,8 +206,8 @@ def test_a_paper_is_never_offered_twice(env_factory, workspace):
     job = make_job(env, seeds="replay\nconsolidation", seed_count="1", screen_batch="9")
     start(env, job)
     shown = numbered(env, job)
-    assert sorted(shown.values()) == ["Paper A", "Paper B", "Paper C"]      # B is in both queries, listed once
-    assert sorted(shown) == [1, 2, 3]
+    assert sorted(shown.values()) == ["Paper A", "Paper B"]                 # B is in both queries, listed once
+    assert sorted(shown) == [1, 2]                                          # C has no copy, so it isn't offered
 
 
 def test_unreachable_papers_are_dropped_without_asking(env_factory, workspace):
@@ -444,8 +446,8 @@ def test_query_seeds_run_one_search_per_line(env_factory, workspace):
     env.runner._tick()
     assert fake.queries[:2] == ["replay", "consolidation"]          # one search per line, in order
     assert set(fake.queries) == {"replay", "consolidation"}         # then paged again, looking for more
-    assert [p["title"] for p in env.jobs.list_papers(job["id"])] == ["Paper A", "Paper B", "Paper C"]   # merged, no dupes
-    assert all(p["status"] == "candidate" for p in env.jobs.list_papers(job["id"]))
+    got = {p["title"]: p["status"] for p in env.jobs.list_papers(job["id"])}      # merged, no dupes
+    assert got == {"Paper A": "candidate", "Paper B": "candidate", "Paper C": "unavailable"}
     assert [(p["provenance"] or {}).get("found_by") for p in env.jobs.list_papers(job["id"])][0].startswith("search:")
 
 

@@ -414,22 +414,32 @@ def fetch_more(runner, job, pass_: int, need: int) -> list[tuple]:
     return list_more(runner, job, c, need, seen)
 
 
+def register_unreachable(runner, job, w, pass_: int, found_by: str) -> None:
+    """A work with no copy anyone can fetch: recorded, never shown. The model judges relevance, not availability."""
+    register_work(runner, job, w, pass_, status="unavailable")
+    runner.jobs.upsert_paper(job["id"], w.key(), provenance={
+        "pass": pass_, "found_by": found_by, "unreachable": True, "venue": w.venue,
+        "cited_by_count": w.cited_by_count})
+    runner.jobs.journal(job["id"], "sources", f"No reachable copy, not shown: \"{w.title[:70]}\"")
+
+
 def register_candidates(runner, job, works: list[tuple], pass_: int) -> list[dict]:
-    """Record works as this round's next numbered entries. Numbers are unique for the whole job and never reused, so
-    the model can keep one it passed over earlier."""
+    """Record works as this round's next numbered entries, each with the URL that answered for it. Numbers are
+    unique for the whole job and never reused, so the model can keep one it passed over earlier."""
     papers = runner.jobs.list_papers(job["id"])
     number = max([number_of(p) for p in papers] or [0])
     numbered_already = {p["key"] for p in papers if number_of(p)}
     added = []
-    for w, found_by in works:
+    for w, found_by, found in works:
         if w.key() in numbered_already:                 # already offered once; a number is never reused
             continue
         numbered_already.add(w.key())
         number += 1
+        url, how = found
         register_work(runner, job, w, pass_, status="candidate")
         added.append(runner.jobs.upsert_paper(job["id"], w.key(), provenance={
             "pass": pass_, "number": number, "found_by": found_by, "abstract": (w.abstract or "")[:1200],
-            "venue": w.venue, "cited_by_count": w.cited_by_count, "shown": True}))
+            "venue": w.venue, "cited_by_count": w.cited_by_count, "shown": True, "url": url, "how": how}))
     return added
 
 
@@ -452,7 +462,10 @@ def candidate_list(batch: list[dict], pass_: int, have: int, quota: int | None) 
 
 
 def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | None:
-    """Search out the next numbered list and write it to candidates.md. None only when the source is spent."""
+    """Build the next numbered list: take candidates, drop the ones this job has seen, check each one can actually
+    be fetched, and present only those. Unreachable works are recorded and never shown — a paper the model keeps is
+    one it can read. None when the candidates are spent."""
+    client = scholar(runner)
     works: list[tuple] = []
     keys: set[str] = set()
     while len(works) < size:
@@ -462,7 +475,20 @@ def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | No
         if not fresh:
             break
         keys.update(w.key() for w, _ in fresh)
-        works += fresh
+        for w, label in fresh:
+            paper = {"title": w.title, "doi": w.doi, "openalex_id": w.openalex_id, "arxiv_id": w.arxiv_id,
+                     "oa_pdf_url": w.oa_pdf_url}
+            try:
+                found = client.locate(paper)
+            except Exception as e:
+                runner.jobs.journal(job["id"], "sources", f"Lookup failed for \"{w.title[:70]}\": {e}")
+                found = None
+            if found:
+                works.append((w, label, found))
+            else:
+                register_unreachable(runner, job, w, pass_, label)
+        if len(works) >= size:
+            break
     if not works:
         return None
     batch = register_candidates(runner, job, works[:size], pass_)
@@ -507,47 +533,6 @@ def write_sources_md(runner, job) -> None:
     (workspace_of(runner, job) / "sources.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def verify_source(runner, job, task, p: dict) -> tuple[bool, str]:
-    """Go and get the paper the model chose. A source counts only once a URL actually hands us the document:
-    OpenAlex's is_oa flag says nothing about whether a publisher answers a script (it usually doesn't)."""
-    if p["file_path"]:
-        runner.jobs.upsert_paper(job["id"], p["key"], status="queued")
-        return True, "local file"
-    try:
-        found = scholar(runner).locate(p)
-    except Exception as e:
-        runner.jobs.journal(job["id"], "sources", f"Lookup failed for \"{p['title']}\": {e}", task["key"])
-        found = None
-    if not found:
-        runner.jobs.upsert_paper(job["id"], p["key"], status="unavailable",
-                                 provenance={**(p.get("provenance") or {}), "unreachable": True})
-        return False, "no reachable copy"
-    url, how = found
-    runner.jobs.upsert_paper(job["id"], p["key"], status="queued",
-                             provenance={**(p.get("provenance") or {}), "url": url, "how": how})
-    return True, url
-
-
-def screen_unfinished(runner, job, task) -> str | None:
-    """Called when the model tries to finish a screening round. None lets it finish: the round has its sources, or
-    there is nothing left to look at. Otherwise the next list comes back and the round goes on."""
-    c = cfg(job)
-    pass_ = int(task["params"]["pass"])
-    quota = task["params"]["quota"]
-    quota = int(quota) if quota is not None else None
-    have = len(selected_in(runner, job, pass_))
-    if quota is not None and have >= quota:
-        return None
-    undecided = [p for p in round_papers(runner, job, pass_, "candidate")]
-    text = (candidate_list(undecided, pass_, have, quota) if undecided else
-            next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota))
-    if text is None:
-        return None                    # every search for this round is exhausted; finishing short is honest
-    wanted = f"the {quota} papers it needs" if quota is not None else "every relevant paper it can find"
-    return (f"Not finished yet: this round has {have} and is after {wanted}. Keep more from this list with "
-            f"keep_sources, or send an empty list to see the next one.\n\n{text}")
-
-
 def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     """One turn of the selection loop, run by the keep_sources tool.
 
@@ -561,18 +546,16 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     quota = int(quota) if quota is not None else None
     by_number = {number_of(p): p for p in round_papers(runner, job, pass_)}
     wanted = list(dict.fromkeys(int(n) for n in keep))
-    require_network(runner, job, task, "Fetch the papers chosen from the candidate list")
-
-    taken, unreachable, ignored = [], [], []
+    taken, ignored = [], []
     for n in wanted:
         p = by_number.get(n)
         if p is None or p["status"] not in ("candidate", "rejected"):
             ignored.append(n)
             continue
-        ok, where = verify_source(runner, job, task, runner.jobs.get_paper(job["id"], p["key"]))
-        (taken if ok else unreachable).append(p)
-        runner.jobs.journal(job["id"], "sources",
-                            f"{'Kept' if ok else 'Dropped'} #{n} \"{p['title'][:70]}\": {where}", task["key"])
+        runner.jobs.upsert_paper(job["id"], p["key"], status="queued")
+        taken.append(p)
+        runner.jobs.journal(job["id"], "sources", f"Kept #{n} \"{p['title'][:70]}\": "
+                                                  f"{(p['provenance'] or {}).get('url', 'local file')}", task["key"])
     for p in round_papers(runner, job, pass_, "candidate"):        # everything shown and not kept is decided
         runner.jobs.upsert_paper(job["id"], p["key"], status="rejected")
     write_sources_md(runner, job)
@@ -582,9 +565,6 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     lines = []
     if taken:
         lines.append(f"Kept {len(taken)}: " + "; ".join(f"#{number_of(p)} {p['title'][:60]}" for p in taken))
-    if unreachable:
-        lines.append(f"Dropped {len(unreachable)} with no reachable copy (being replaced): "
-                     + "; ".join(f"#{number_of(p)}" for p in unreachable))
     if ignored:
         lines.append(f"Not in the current list, ignored: {', '.join('#' + str(n) for n in ignored)}.")
     lines.append(f"{have} of {quota} sources gathered." if quota is not None

@@ -242,22 +242,21 @@ def test_checks_failure_feeds_next_attempt(env_factory):
     assert env.task(job["id"], "t1")["status"] == "done"
 
 
-def test_repeated_failure_pauses_job_and_retry_resumes(env_factory):
+def test_giving_up_asks_the_user_and_the_answer_resumes_the_task(env_factory):
+    """fail_task is the model saying what it needs, so the task waits for an answer instead of being retried
+    silently or counted out by an attempt ceiling."""
     give_up = call("fail_task", reason="The data source is missing", what_would_help="Tell me where the data is")
-    env = env_factory([give_up, give_up, give_up,
-                       call("write_file", path="data.txt", content="x"), call("complete_task", summary="Worked this time.")])
+    env = env_factory([give_up,
+                       call("write_file", path="data.txt", content="x"),
+                       call("complete_task", summary="Worked once I knew where the data was.")])
     job = env.job()
     env.plan(job["id"], plan=GOOD_PLAN[:1])
-    for _ in range(3):
-        env.runner._tick()
+    env.runner._tick()
     t1 = env.task(job["id"], "t1")
-    assert t1["status"] == "failed" and t1["attempts"] == 3
+    assert t1["status"] == "waiting_user" and t1["waiting_kind"] == "question"
+    assert "data source is missing" in t1["question"] and "Tell me where the data is" in t1["question"]
     assert "data source is missing" in t1["guidance"][-1]
-    env.runner._tick()                          # settle
-    job_row = env.jobs.get_job(job["id"])
-    assert job_row["status"] == "paused" and "Needs your decision" in job_row["status_reason"]
-    env.runner.retry_task(job["id"], t1["id"])
-    assert env.jobs.get_job(job["id"])["status"] == "running"
+    env.runner.answer(job["id"], "It's in D:/data/source.csv", t1["id"])
     env.runner._tick()
     assert env.task(job["id"], "t1")["status"] == "done"
 
@@ -476,22 +475,24 @@ def test_planner_context_reaches_every_task_and_mirror(env_factory, workspace):
     assert "Never edit evaluate.py" in text and "[x] [t1] Write data file" in text
 
 
-def test_context_tool_removes_and_enforces_cap(env_factory):
-    from localagent.jobs.scratchpad import CONTEXT_CHAR_LIMIT
+def test_context_tool_adds_and_removes_without_a_cap(env_factory):
+    """What a job remembers between tasks is the job's business: long items and a large context are kept, not
+    refused. Context fitting shortens the prompt if it must; nothing is thrown away here."""
     env = env_factory([
         call("update_context", add=["old fact"]),
         lambda msgs: call("update_context", remove=["c1"], add=["new fact"]),
-        call("update_context", add=["x" * 399] * (CONTEXT_CHAR_LIMIT // 399 + 1)),
+        call("update_context", add=["x" * 4000]),
         call("update_context", add=["y" * 500]),
-        call("fail_task", reason="just testing the scratchpad"),
+        call("complete_task", summary="Recorded what matters in the scratchpad."),
     ])
     job = env.job()
     env.plan(job["id"], plan=GOOD_PLAN[:1])
     env.runner._tick()
-    assert [i["text"] for i in env.jobs.list_context(job["id"])] == ["new fact"]
+    texts = [i["text"] for i in env.jobs.list_context(job["id"])]
+    assert texts[0] == "new fact" and len(texts) == 3          # nothing rejected for being long or plentiful
     run = env.jobs.list_runs(job["id"])[-1]
     results = [m["content"] for m in env.jobs.list_run_messages(run["id"]) if m["role"] == "tool"]
-    assert "Consolidate first" in results[2] and "at most 400 characters" in results[3]
+    assert not any("Consolidate first" in r or "at most" in r for r in results)
 
 
 def test_checklist_survives_interruption_and_is_shown_on_resume(env_factory):
@@ -544,10 +545,11 @@ def test_context_api(settings, workspace):
         job = client.post("/api/jobs", json={"project_id": project["id"], "title": "J", "goal": "g"}).json()
         item = client.post(f"/api/jobs/{job['id']}/context", json={"text": "Reports go in D:/Reports"}).json()
         detail = client.get(f"/api/jobs/{job['id']}").json()
-        assert detail["context"][0]["author"] == "user" and detail["context_limit"] > 0
-        assert client.post(f"/api/jobs/{job['id']}/context", json={"text": "z" * 500}).status_code == 400
+        assert detail["context"][0]["author"] == "user" and detail["context_limit"] == 0   # 0 = no cap
+        assert client.post(f"/api/jobs/{job['id']}/context", json={"text": "z" * 500}).status_code == 200
         assert client.delete(f"/api/jobs/{job['id']}/context/{item['id']}").status_code == 200
-        assert client.get(f"/api/jobs/{job['id']}").json()["context"] == []
+        left = client.get(f"/api/jobs/{job['id']}").json()["context"]
+        assert [i["id"] for i in left] == [2]          # only the deleted one went; the long note stays
 
 
 # ---------------------------------------------------------------- API
@@ -576,7 +578,9 @@ def test_job_api(settings, workspace):
         assert client.get(f"/api/jobs/{job['id']}").status_code == 404
 
 
-def test_task_prompt_shows_user_guidance_and_only_recent_attempt_notes():
+def test_task_prompt_shows_every_note_from_earlier_attempts():
+    """A retry that can't see why an earlier attempt was rejected repeats the mistake: w0_11 burned three attempts
+    on one bad citation that way."""
     from localagent.jobs.sessions import recent_guidance
     items = ["A previous attempt ended without finishing (step_limit). one",
              "You asked the user: \"which file?\" They answered: \"data.csv\"",
@@ -585,8 +589,7 @@ def test_task_prompt_shows_user_guidance_and_only_recent_attempt_notes():
              "A previous attempt was interrupted (stopped, paused, or the app restarted) after these actions: three",
              "A previous attempt called complete_task, but these checks failed: four"]
     shown, omitted = recent_guidance(items)
-    assert omitted == 2 and not any(s.endswith((" one", " two")) for s in shown)
-    assert "data.csv" in shown[0] and "reviewer" in shown[1] and shown[-1].endswith("four")
+    assert omitted == 0 and shown == items
 
 
 def test_file_contains_ignores_case_for_headings_only(workspace):

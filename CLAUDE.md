@@ -1,5 +1,17 @@
 # Goal
 	Create a locally-hosted llm agent capable of running an arbitrary task list to the extent of the frontier agents and to the capability of the 	model. 
+# Rules
+	NEVER add a limit the user did not ask for. This is absolute and it has been violated repeatedly.
+	A limit means any bound on work or output: retry ceilings, step caps, consecutive-failure stops, quotas, pool
+	sizes, truncation, word or item counts in prompts, timeouts, "max_*" of any kind, in code or in prompt text.
+	It includes bounds added "just for a test run" and bounds that only shorten something.
+	If a bound looks necessary, say so in a sentence and ask. The user decides. Waiting is cheap; a hidden ceiling
+	is not: it makes every result unattributable, because a weak output can no longer be told apart from the cap,
+	and it silently kills work the user is trying to do.
+	Limits that already exist must be visible and settable, "all"/"none" must be accepted for no limit, and
+	whatever stops a run must name whose limit it was ("your limit: 60 papers" vs "the literature converged").
+	Time is not a constraint worth bounding. If a job takes 16 hours, it takes 16 hours.
+
 # Stack
 	Python
 	Environment link located in project folder as a short cut. Install whatever packages are necessary for the project

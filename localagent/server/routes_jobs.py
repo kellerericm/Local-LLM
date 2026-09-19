@@ -203,9 +203,9 @@ def register(app: FastAPI, rt) -> None:
         text = body.text.strip()
         if not text:
             raise HTTPException(400, "Empty note")
-        if len(text) > ITEM_CHAR_LIMIT:
+        if ITEM_CHAR_LIMIT and len(text) > ITEM_CHAR_LIMIT:
             raise HTTPException(400, f"Keep each note under {ITEM_CHAR_LIMIT} characters")
-        if context_chars(jobs.list_context(job_id)) + len(text) > CONTEXT_CHAR_LIMIT:
+        if CONTEXT_CHAR_LIMIT and context_chars(jobs.list_context(job_id)) + len(text) > CONTEXT_CHAR_LIMIT:
             raise HTTPException(400, "The scratchpad context is full; remove something first")
         item = jobs.add_context(job_id, text, "user")
         jobs.journal(job_id, "context", f"User added to the scratchpad: {text}")

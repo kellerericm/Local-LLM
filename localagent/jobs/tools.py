@@ -46,7 +46,7 @@ def update_context(ctx: ToolContext, add: list[str] | None = None, remove: list[
     conv = ctx.conversation
     jobs, job_id = conv.jobs, conv.job["id"]
     add = [a.strip() for a in (add or []) if a and a.strip()]
-    too_long = [a for a in add if len(a) > ITEM_CHAR_LIMIT]
+    too_long = [a for a in add if ITEM_CHAR_LIMIT and len(a) > ITEM_CHAR_LIMIT]
     if too_long:
         return ToolResult(f"Context items must be at most {ITEM_CHAR_LIMIT} characters each; split or shorten: "
                           f"{too_long[0][:80]}…", ok=False)
@@ -57,7 +57,7 @@ def update_context(ctx: ToolContext, add: list[str] | None = None, remove: list[
         except ValueError:
             return ToolResult(f"Unknown context item id {r!r}; use ids like c12 from the scratchpad.", ok=False)
     current = [i for i in jobs.list_context(job_id) if i["id"] not in ids]
-    if context_chars(current) + sum(len(a) for a in add) > CONTEXT_CHAR_LIMIT:
+    if CONTEXT_CHAR_LIMIT and context_chars(current) + sum(len(a) for a in add) > CONTEXT_CHAR_LIMIT:
         return ToolResult(f"The context would exceed {CONTEXT_CHAR_LIMIT} characters. Consolidate first: remove items "
                           "that are outdated or merge related ones (remove=[ids], add=[merged text]). Current context:\n"
                           + render_context(jobs.list_context(job_id)), ok=False)
@@ -338,7 +338,8 @@ SEARCH_NOTES = Tool(
     "citations in a file, use check_citations instead.",
     {"type": "object", "properties": {
         "query": {"type": "string"}, "source": {"type": "string"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "brief": {"type": "boolean"},
+        "limit": {"type": "integer", "minimum": 1, "description": "how many notes to return; there is no cap"},
+        "brief": {"type": "boolean"},
         "offset": {"type": "integer", "minimum": 0}}},
     search_notes, "job")
 

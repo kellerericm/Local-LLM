@@ -10,7 +10,7 @@ from .base import HandlerResult, Template, is_approval
 
 SKIP_DIRS = {"jobs", "sections", ".git", "__pycache__", "node_modules", ".venv"}
 OUTPUT_NAMES = {"outline.md", "report.md", "report.docx"}
-MAX_SOURCES = 60
+MAX_SOURCES = 0          # 0 = read every document in the folder
 
 
 def workspace_of(runner, job) -> Path:
@@ -53,7 +53,7 @@ SECTION_INSTRUCTIONS = (
     "without evidence.")
 
 SUMMARY_INSTRUCTIONS = (
-    "Read all section files in sections/ and write {path}: '## Summary', then a concise summary (150-300 words) "
+    "Read all section files in sections/ and write {path}: '## Summary', then a summary "
     "answering the question directly, citing the most important notes like [n12], and noting any major disagreement "
     "between sources.")
 
@@ -64,7 +64,7 @@ def _initial_plan(runner, job):
     sources = find_sources(ws, inputs.get("sources") or ".")
     if not sources:
         raise ValueError(f"No documents ({', '.join(sorted(DOC_TYPES))}) found in {ws / (inputs.get('sources') or '.')}")
-    if len(sources) > MAX_SOURCES:
+    if MAX_SOURCES and len(sources) > MAX_SOURCES:
         raise ValueError(f"Found {len(sources)} documents; the limit is {MAX_SOURCES}. Point the job at a smaller folder.")
     tasks = [{"key": "read", "title": "Read the sources and take notes", "instructions": "-", "done_when": "-"}]
     for i, p in enumerate(sources, 1):

@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS job_tasks(
     depends_on TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
+    max_attempts INTEGER NOT NULL DEFAULT 0,          -- 0 = keep trying; a limit is the user's to set
     result_summary TEXT,
     guidance TEXT,
     question TEXT,
@@ -246,7 +246,7 @@ class JobStore:
             "status,max_attempts,kind,handler,params,review,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (uuid.uuid4().hex[:12], job_id, t["key"], t.get("parent_key") or None, pos, t["title"],
              t.get("instructions", ""), t.get("done_when", ""), json.dumps(t.get("checks") or []),
-             json.dumps(t.get("depends_on") or []), T_PENDING, int(t.get("max_attempts", 3)), t.get("kind") or "agent",
+             json.dumps(t.get("depends_on") or []), T_PENDING, int(t.get("max_attempts", 0)), t.get("kind") or "agent",
              t.get("handler"), json.dumps(t.get("params") or {}), int(bool(t.get("review"))), now, now))
 
     def append_tasks(self, job_id: str, tasks: list[dict]) -> list[dict]:

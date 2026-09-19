@@ -101,7 +101,7 @@ class Coordinator:
         conv = ChatConversation(self.store, target) if isinstance(target, str) else target
         cancel = cancel or threading.Event()
         settings = self.settings_getter()
-        max_steps = conv.max_steps or settings.max_steps
+        max_steps = conv.max_steps or settings.max_steps or 10**9
         if user_text is not None:
             self._add(conv, "user", user_text, kind=user_kind)
         self._status(conv, "running")
@@ -143,7 +143,7 @@ class Coordinator:
                                   tool_call_id=c["id"], name=c["name"], ok=False)
                     self._add(conv, "user", prompts.parse_error_note(
                         parsed.errors, FORMAT_REMINDER.get(parsed.format, "")), kind="coordinator")
-                    if failures >= settings.max_consecutive_failures:
+                    if settings.max_consecutive_failures and failures >= settings.max_consecutive_failures:
                         outcome = self._wrap_up(conv, cancel, "needs_help", max_steps)
                         break
                     continue
@@ -153,7 +153,7 @@ class Coordinator:
                         failures += 1
                         self._add(conv, "user", "Your reply was empty. Continue the task, or summarize "
                                   "and stop if you are done.", kind="coordinator")
-                        if failures >= settings.max_consecutive_failures:
+                        if settings.max_consecutive_failures and failures >= settings.max_consecutive_failures:
                             outcome = self._wrap_up(conv, cancel, "needs_help", max_steps)
                             break
                         continue
@@ -201,7 +201,7 @@ class Coordinator:
                 if end_turn:
                     outcome = "waiting_user"
                     break
-                if failures >= settings.max_consecutive_failures:
+                if settings.max_consecutive_failures and failures >= settings.max_consecutive_failures:
                     outcome = self._wrap_up(conv, cancel, "needs_help", max_steps)
                     break
             else:

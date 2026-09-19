@@ -119,7 +119,7 @@ function renderJob() {
       h("section", { class: "job-goal" }, h("div", { class: "section-label" }, "Goal"), h("p", {}, job.goal)),
       budgetLine(job),
       questionsPanel(job, tasks),
-      scratchpadPanel(job, J.data.context || [], J.data.context_limit || 6000),
+      scratchpadPanel(job, J.data.context || [], J.data.context_limit || 0),
       J.data.note_count ? notesPanel(job, J.data.note_count) : null,
       h("section", {}, h("div", { class: "section-label" }, `Plan${tasks.length ? ` · ${planCounts(tasks)}` : ""}`),
         tasks.length ? planTree(job, tasks, runs) : h("p", { class: "muted" },
@@ -242,7 +242,8 @@ function scratchpadPanel(job, items, limit) {
   };
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } });
   return h("section", { class: "scratchpad" },
-    h("div", { class: "section-label" }, `Scratchpad context · ${used}/${limit} characters`),
+    h("div", { class: "section-label" },
+      limit ? `Scratchpad context · ${used}/${limit} characters` : `Scratchpad context · ${used} characters`),
     h("p", { class: "hint" }, "The job's working memory. Every task reads it first; the agent adds facts, decisions, and dead ends as it learns them."),
     items.length ? h("ul", { class: "context-items" }, items.map((i) => h("li", {},
       h("span", { class: "tkey" }, `c${i.id}`),

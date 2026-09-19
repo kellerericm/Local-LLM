@@ -28,8 +28,11 @@ from .templates import HandlerResult, get_template
 
 log = logging.getLogger(__name__)
 
-TASK_MAX_STEPS = 30
-PLAN_MAX_ATTEMPTS = 3
+# No cap on steps, attempts or consecutive failures: a job is bounded by the budget the user set (hours, steps,
+# or indefinite) and by nothing else. A limit here would make a weak result impossible to attribute — the user
+# could not tell the model failing from a ceiling of ours (their instruction, 2026-09-18).
+TASK_MAX_STEPS = 0            # 0 = as many steps as the budget allows
+PLAN_MAX_ATTEMPTS = 0
 MAX_NUDGES = 2
 
 
@@ -428,7 +431,7 @@ class JobRunner:
 
     def _plan(self, job: dict) -> None:
         attempt = sum(1 for r in self.jobs.list_runs(job["id"]) if r["kind"] == "plan" and r["outcome"] != "interrupted") + 1
-        if attempt > PLAN_MAX_ATTEMPTS:
+        if PLAN_MAX_ATTEMPTS and attempt > PLAN_MAX_ATTEMPTS:
             self.jobs.update_job(job["id"], status=FAILED, status_reason=(
                 f"Couldn't produce a valid plan in {PLAN_MAX_ATTEMPTS} attempts. Clarify the goal and resume."))
             self.jobs.journal(job["id"], "failed", "Planning failed repeatedly.")
@@ -484,8 +487,10 @@ class JobRunner:
         self.jobs.journal(job["id"], "start", f"Started: {task['title']} (attempt {attempt})", task["key"])
         remaining = None if job["budget"].get("indefinite") else max(
             1, int(job["budget"].get("max_steps") or 10**6) - job["usage"].get("steps", 0))
+        # The budget the user set is the only ceiling; TASK_MAX_STEPS is 0 (no limit) unless someone sets one.
         # +1 so an exhausted budget is caught at a break point (pause) rather than as a step-limit failure.
-        max_steps = min(TASK_MAX_STEPS, remaining + 1) if remaining else TASK_MAX_STEPS
+        cap = TASK_MAX_STEPS or (remaining + 1 if remaining else 0)
+        max_steps = min(cap, remaining + 1) if (remaining and cap) else cap
         session = TaskSession(self, job, run, task, max_steps)
         outcome = self._execute(session, prompts.task_start(task))
         res = session.result
@@ -506,7 +511,7 @@ class JobRunner:
             if not failed and task["review"]:
                 review = self._review(job, task, res["summary"], run)
             if not failed and review is not None and not review["passed"]:
-                last = task["attempts"] + 2 >= task["max_attempts"]
+                last = bool(task["max_attempts"]) and task["attempts"] + 2 >= task["max_attempts"]
                 self._attempt_failed(job, task, run, session, "review_rejected",
                                      "A reviewer rejected the previous attempt:\n" + review["issues_text"]
                                      + "\nFix exactly these points and change nothing else; rewriting the whole "
@@ -526,9 +531,14 @@ class JobRunner:
                 self._attempt_failed(job, task, run, session, "checks_failed",
                                      f"A previous attempt called complete_task, but these checks failed:\n{lines}")
         elif res and res["kind"] == "fail":
+            # fail_task is the model saying it cannot do this and what would help. That is a question for the user,
+            # not something to retry silently: the task waits, visibly, and the answer becomes its guidance.
             help_ = f" What would help: {res['what_would_help']}" if res.get("what_would_help") else ""
-            self._attempt_failed(job, task, run, session, "gave_up",
-                                 f"A previous attempt gave up: {res['reason']}.{help_}")
+            question = f"{task['title']}: the agent couldn't finish it. {res['reason']}.{help_}"
+            self.jobs.add_guidance(task["id"], f"A previous attempt gave up: {res['reason']}.{help_}")
+            self.jobs.update_task(task["id"], status=T_WAITING, question=question, waiting_kind="question")
+            self.jobs.finish_run(run["id"], "done", "gave_up", res["reason"], session.steps)
+            self.jobs.journal(job["id"], "question", f"Asked the user: {question}", task["key"])
         elif res and res["kind"] == "ask":
             self.jobs.update_task(task["id"], status=T_WAITING, question=res["question"], waiting_kind="question")
             self.jobs.finish_run(run["id"], "done", "ask", res["question"], session.steps)
@@ -612,7 +622,7 @@ class JobRunner:
             attempts = task["attempts"] + 1
             if result.retry_guidance:
                 self.jobs.add_guidance(task["id"], result.retry_guidance)
-            status = T_FAILED if attempts >= task["max_attempts"] else T_PENDING
+            status = T_FAILED if task["max_attempts"] and attempts >= task["max_attempts"] else T_PENDING
             self.jobs.update_task(task["id"], status=status, attempts=attempts)
             self.jobs.finish_run(run["id"], "failed", "error", result.summary, 0)
             self.jobs.journal(job["id"], "failed" if status == T_FAILED else "retry", result.summary[:300], task["key"])
@@ -661,7 +671,7 @@ class JobRunner:
         attempts = task["attempts"] + 1
         self.jobs.add_guidance(task["id"], guidance)
         self.jobs.finish_run(run["id"], "failed", outcome, guidance, session.steps)
-        if attempts >= task["max_attempts"]:
+        if task["max_attempts"] and attempts >= task["max_attempts"]:
             self.jobs.update_task(task["id"], status=T_FAILED, attempts=attempts)
             self.jobs.journal(job["id"], "failed", f"Failed after {attempts} attempts. Last: {guidance[:300]}", task["key"])
         else:

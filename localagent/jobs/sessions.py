@@ -14,12 +14,14 @@ from .tools import (ADD_NOTE, CHECK_CITATIONS, COMPLETE_TASK, FAIL_TASK, JOB_ASK
                     SEARCH_NOTES, UPDATE_CHECKLIST, UPDATE_CONTEXT)
 
 READ_ONLY_TOOLS = ("read_file", "read_document", "list_dir", "glob", "grep")
-ATTEMPT_NOTES_SHOWN = 2
+ATTEMPT_NOTES_SHOWN = 0          # 0 = a retry sees every note from every earlier attempt and from the user
 
 
 def recent_guidance(items: list[str]) -> tuple[list[str], int]:
-    """Everything the user said, plus only the latest attempt notes: a long failure history crowds the context and
-    describes files that may no longer exist (dry run 8: six notes about an outline that had been moved aside)."""
+    """Everything the user said and everything earlier attempts learned. A retry that can't see why the last one was
+    rejected repeats the mistake, which is what cost w0_11 three attempts on one bad citation."""
+    if not ATTEMPT_NOTES_SHOWN:
+        return list(items), 0
     attempt = [i for i, g in enumerate(items) if g.startswith(("A previous attempt", "Attempt "))]
     drop = set(attempt[:-ATTEMPT_NOTES_SHOWN])
     return [g for i, g in enumerate(items) if i not in drop], len(drop)

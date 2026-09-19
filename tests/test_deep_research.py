@@ -376,15 +376,17 @@ def test_full_text_fallback_and_long_papers_are_read_in_full(env_factory, worksp
     assert a["Paper B"]["status"] == "reading"
 
 
-def test_no_papers_read_fails_the_job_instead_of_writing_an_empty_report(env_factory, workspace):
+def test_no_papers_read_asks_instead_of_writing_an_empty_report(env_factory, workspace):
+    """A job with nothing readable is a dead end, not a task to retry forever: it asks, and waits."""
     env = env_factory(keep(1, 2, summary="Both look relevant."))
     env.runner.scholar = NoPdfScholar(workspace)
     job = make_job(env, seeds="replay", seed_count="2", screen_batch="3")
     start(env, job)
-    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") in ("failed", "needs_help"))
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") == "waiting_user")
+    assert "could be read" in task_by_key(env, job, "next_r0")["question"]
     assert task_by_key(env, job, "layout") is None
-    runs = [r for r in env.jobs.list_runs(job["id"]) if r["task_id"] == task_by_key(env, job, "next_r0")["id"]]
-    assert any("No papers could be read" in (r["summary"] or "") for r in runs)
+    env.runner.answer(job["id"], "continue", task_by_key(env, job, "next_r0")["id"])
+    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "layout") is not None)
 
 
 def test_citation_ties_prefer_widely_cited_works_and_graph_shows_titles(env_factory, workspace):
@@ -448,8 +450,9 @@ def test_reviewed_report_tasks_get_more_attempts(env_factory, workspace):
                                        "checks": [], "depends_on": [], "parent_key": None}])
     expand_sections(env.runner, env.jobs.get_job(job["id"]))
     tasks = {t["key"]: t for t in env.jobs.list_tasks(job["id"])}
-    assert tasks["s1"]["max_attempts"] == REVIEWED_ATTEMPTS and tasks["abstract"]["max_attempts"] == REVIEWED_ATTEMPTS
-    assert tasks["section_digest"]["max_attempts"] == 3          # code tasks keep the default
+    assert tasks["s1"]["max_attempts"] == REVIEWED_ATTEMPTS == 0      # 0 = as many attempts as the budget allows
+    assert tasks["abstract"]["max_attempts"] == REVIEWED_ATTEMPTS
+    assert tasks["section_digest"]["max_attempts"] == 0               # nothing is capped unless the user caps it
 
 
 def test_paper_write_ups_get_the_same_attempts_as_reviewed_writing(env_factory, workspace):
@@ -461,8 +464,8 @@ def test_paper_write_ups_get_the_same_attempts_as_reviewed_writing(env_factory, 
     job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
     start(env, job)
     assert tick_until(env, job["id"], lambda: task_by_key(env, job, "w0_1") is not None)
-    assert task_by_key(env, job, "w0_1")["max_attempts"] == REVIEWED_ATTEMPTS
-    assert task_by_key(env, job, "p0_1_1")["max_attempts"] == 3      # part reading keeps the default
+    assert task_by_key(env, job, "w0_1")["max_attempts"] == REVIEWED_ATTEMPTS == 0
+    assert task_by_key(env, job, "p0_1_1")["max_attempts"] == 0      # no ceiling on reading either
 
 
 def test_wikipedia_seeds_take_the_articles_cited_works(env_factory, workspace):

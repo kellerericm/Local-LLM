@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from .planner import children_map
 
-CONTEXT_CHAR_LIMIT = 6000        # ~1.5k tokens
-ITEM_CHAR_LIMIT = 400
-TASK_LIST_CHAR_LIMIT = 4000
+# 0 = no limit. What the job remembers between tasks is the job's business; context fitting already shortens the
+# prompt when it has to, so a hard cap here only threw away things the model had decided were worth keeping.
+CONTEXT_CHAR_LIMIT = 0
+ITEM_CHAR_LIMIT = 0
+TASK_LIST_CHAR_LIMIT = 0
 
 BOX = {"done": "[x]", "skipped": "[-]", "failed": "[!]", "waiting_user": "[?]", "running": "[>]", "pending": "[ ]"}
 
@@ -53,7 +55,7 @@ def render_task_list(tasks: list[dict], current_key: str | None = None) -> str:
 
     walk(None, 0)
     text = "\n".join(lines)
-    if len(text) > TASK_LIST_CHAR_LIMIT:
+    if TASK_LIST_CHAR_LIMIT and len(text) > TASK_LIST_CHAR_LIMIT:
         idx = next((i for i, l in enumerate(lines) if "← YOUR TASK" in l), 0)
         text = "… (earlier tasks omitted) …\n" + "\n".join(lines[max(0, idx - 12): idx + 12]) + "\n… (later tasks omitted) …"
     return text
@@ -68,6 +70,7 @@ def render_checklist(items: list[dict]) -> str:
 def render_block(tasks: list[dict], context: list[dict], listing: str, current: dict | None = None) -> str:
     parts = ["## Job scratchpad (persistent, shared by every task of this job)",
              "### Workspace top level", listing or "(unavailable)",
+             f"### Context ({context_chars(context)} characters)" if not CONTEXT_CHAR_LIMIT else
              f"### Context ({context_chars(context)}/{CONTEXT_CHAR_LIMIT} characters used)", render_context(context),
              "### Task list", render_task_list(tasks, current["key"] if current else None)]
     if current is not None:

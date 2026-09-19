@@ -33,18 +33,21 @@ PDF_DIR = "papers/pdf"
 
 PART = """Read {part} with read_file. It is part {k} of {n} of the paper "{title}" (the full paper is {source}; you
 don't need to open it). Write {summary} once, containing, for each section that appears in this part, '### <section
-name>' followed by a 3-6 sentence summary of what it says. Then, for up to 5 important claims relevant to the research
-question ({question}), call add_note with source "{part}", the section as location, and a quote copied character for
-character from {part} (one sentence or a shorter phrase is best). If a quote is rejected, copy a shorter phrase from the
-part or move on to the next claim. Work only on this part, then call complete_task."""
+name>' followed by a summary of what it says. Then, for every claim in this part that bears on the research question
+({question}), call add_note with source "{part}", the section as location, and a quote copied character for character
+from {part} (one sentence or a shorter phrase is best). Save as many as the part supports: these notes are the corpus,
+and anything you leave out is lost to every later step. If a quote is rejected, copy a shorter phrase from the part or
+move on to the next claim. Work only on this part, then call complete_task."""
 
 ASSEMBLE = """Assemble the write-up of "{title}". Steps, each done once:
 1. Read the part summaries: {summaries}.
-2. Call search_notes once with source "{source}", brief true, limit 50, to list the notes saved from this paper.
+2. Call search_notes with source "{source}", brief true, and a limit high enough to list every note saved from
+   this paper (pass the total if you know it; page with offset if the result says there are more).
 3. Write {md} containing:
 - '# {title}'
 - '## Section summaries': the part summaries in order, lightly edited into one flow
-- '## Key claims': 5-10 bullets for the paper's most important claims, each citing a note from step 2 like [n12]
+- '## Key claims': a bullet for each of the paper's claims that bears on the research question, each citing a
+  note from step 2 like [n12]
 - '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the
   research question: {question}
 4. {references}
@@ -89,13 +92,13 @@ section: one '##' heading at the top and '###' for anything below it. Write the 
 once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 
 ABSTRACT = """Read sections/_digest.md (the opening and key points of every section, built to fit your context) and write
-sections/00-abstract.md: '## Abstract', then 150-250 words covering the question, the scope of the literature (how many
+sections/00-abstract.md: '## Abstract', then an abstract covering the question, the scope of the literature (how many
 papers, how they were selected by citation), the main findings, the key disagreements, and the conclusion. Cite the most
 important notes like [n12], using only note ids that appear in the digest. Call check_citations on the file, fix any
 ids it lists, then call complete_task.
 Facts about the scope, from the job's records (use these numbers exactly; don't count notes as papers): {facts}"""
 
-REVIEWED_ATTEMPTS = 5
+REVIEWED_ATTEMPTS = 0    # 0 = as many attempts as the budget allows; reviewed writing converges slowly
 DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with room for the task and the answer
 SECTION_DIGEST_CHARS = 16_000
 
@@ -1017,11 +1020,15 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
                                                   "are exhausted, so no replacement exists.", task["key"])
 
     if not read:
-        lost = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
-        return HandlerResult(False, "No papers could be read", retry_guidance=(
-            f"None of the papers chosen so far could be read ({lost} unavailable or skipped), and no further "
-            "candidates could be found. The job cannot write a report without sources: stop it and start again with "
-            "a folder of PDFs, or queries whose results are open access."))
+        answers = [m.group(1).lower() for g in task["guidance"]
+                   for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
+        if not (answers and "continue" in answers[-1]):
+            lost = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
+            # Not a failure to retry and not a limit: the job has nothing to work with and says so.
+            return HandlerResult(False, "No papers could be read", wait_question=(
+                f"None of the papers chosen so far could be read ({lost} unavailable or skipped), and the searches "
+                "for this round are exhausted. A report now would have no sources. Stop the job and start again with "
+                "a folder of PDFs or different queries, or reply 'continue' to go on anyway."))
 
     # Citation counts over everything read: they order the next round's candidates and fill the graph.
     counts: dict[str, int] = {}
@@ -1034,7 +1041,8 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
         if p["key"] in counts:
             runner.jobs.upsert_paper(job["id"], p["key"], cited_by_read=counts[p["key"]])
     known = {p["key"] for p in papers}
-    graph_ids = [k[3:] for k, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:GRAPH_ROWS]
+    ranked_counts = sorted(counts.items(), key=lambda kv: -kv[1])
+    graph_ids = [k[3:] for k, _ in (ranked_counts[:GRAPH_ROWS] if GRAPH_ROWS else ranked_counts)
                  if k.startswith("oa:") and k not in known]
     by_id: dict[str, Work] = {}
     if graph_ids:
@@ -1071,7 +1079,7 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
                                f"Round {round_ + 1} will choose from them. See citation_graph.md.")
 
 
-GRAPH_ROWS = 40
+GRAPH_ROWS = 0           # 0 = write every cited work to citation_graph.md
 
 
 def _write_graph(ws: Path, counts, info, papers) -> None:
@@ -1080,7 +1088,7 @@ def _write_graph(ws: Path, counts, info, papers) -> None:
              "citations). The most cited of the ones this job hasn't seen are offered to the model each round.", "",
              "| Cited by (papers read) | Work | Year | Total citations | Status |", "|---|---|---|---|---|"]
     rows = sorted(counts.items(), key=lambda kv: (-kv[1], -(info.get(kv[0], {}).get("cited_by_count") or 0)))
-    for k, n in rows[:GRAPH_ROWS]:
+    for k, n in (rows[:GRAPH_ROWS] if GRAPH_ROWS else rows):
         p, meta = by_key.get(k), info.get(k, {})
         title = (p and p["title"]) or meta.get("title") or k
         year = (p and p["year"]) or meta.get("year") or ""

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import re
 
-MAX_DEPTH = 3
-MAX_CHILDREN = 8
-MAX_LEAVES = 60
-MAX_TASKS = 80
+# 0 = no limit. A plan is the model's to shape; if it proposes something unworkable that is a finding about the
+# model, not something to hide behind a lint rule.
+MAX_DEPTH = 0
+MAX_CHILDREN = 0
+MAX_LEAVES = 0
+MAX_TASKS = 0
 CHECK_TYPES = {
     "file_exists": ["path"],
     "file_contains": ["path", "text"],
@@ -94,7 +96,7 @@ def lint_plan(tasks: list[dict], policy=None, guard=None) -> list[str]:
     errors: list[str] = []
     if not tasks:
         return ["The plan has no tasks."]
-    if len(tasks) > MAX_TASKS:
+    if MAX_TASKS and len(tasks) > MAX_TASKS:
         errors.append(f"The plan has {len(tasks)} tasks; the limit is {MAX_TASKS}. Group or simplify.")
     keys = [t["key"] for t in tasks]
     by_key = {t["key"]: t for t in tasks}
@@ -120,16 +122,16 @@ def lint_plan(tasks: list[dict], policy=None, guard=None) -> list[str]:
                 break
             seen.add(cur["key"])
             depth += 1
-        if depth > MAX_DEPTH:
+        if MAX_DEPTH and depth > MAX_DEPTH:
             errors.append(f"Task {t['key']} is nested {depth} levels deep; the limit is {MAX_DEPTH}.")
 
     for parent, kids in children_map(tasks).items():
-        if len(kids) > MAX_CHILDREN:
+        if MAX_CHILDREN and len(kids) > MAX_CHILDREN:
             where = f"Task {parent}" if parent else "The top level"
             errors.append(f"{where} has {len(kids)} direct subtasks; the limit is {MAX_CHILDREN}. Add a grouping level.")
 
     leaf_list = leaves(tasks)
-    if len(leaf_list) > MAX_LEAVES:
+    if MAX_LEAVES and len(leaf_list) > MAX_LEAVES:
         errors.append(f"The plan has {len(leaf_list)} executable tasks; the limit is {MAX_LEAVES}.")
 
     for t in leaf_list:

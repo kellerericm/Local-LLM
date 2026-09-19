@@ -353,7 +353,7 @@ class ScholarClient:
                 return url, "pmc"
         return None
 
-    def wikipedia_references(self, article: str, limit: int = 60) -> list[dict]:
+    def wikipedia_references(self, article: str, limit: int = 0) -> list[dict]:
         """The works an encyclopedia article cites: a curated reading list for a topic. Returns dicts with doi, title,
         year and arxiv, in article order, for resolving against the scholarly index."""
         data = self._get("https://en.wikipedia.org/w/api.php", {
@@ -381,7 +381,7 @@ class ScholarClient:
             seen.add(key)
             out.append({"doi": doi, "title": re.sub(r"\[\[|\]\]|''", "", title) if title else None,
                         "arxiv": arxiv, "year": int(y.group(0)) if y else None})
-            if len(out) >= limit:
+            if limit and len(out) >= limit:
                 break
         return out
 

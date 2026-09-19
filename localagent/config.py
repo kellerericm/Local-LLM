@@ -45,8 +45,8 @@ class Settings:
     min_p: float = 0.0
     presence_penalty: float = 0.0
     repetition_penalty: float = 1.0
-    max_steps: int = 60
-    max_consecutive_failures: int = 3
+    max_steps: int = 0                       # 0 = no limit; a run ends when the work does or the budget does
+    max_consecutive_failures: int = 0        # 0 = never abandon a task over repeated tool errors
     tool_timeout_s: int = 300
     host: str = "127.0.0.1"
     port: int = 8765

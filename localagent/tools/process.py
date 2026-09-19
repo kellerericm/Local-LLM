@@ -68,18 +68,17 @@ def run_process(argv: list[str], cwd: Path, env: dict, timeout_s: float,
 
     def pump():
         for chunk in iter(lambda: proc.stdout.read(4096), b""):
-            if size[0] < 4_000_000:          # keep memory bounded for runaway output
-                chunks.append(chunk)
-                size[0] += len(chunk)
+            chunks.append(chunk)
+            size[0] += len(chunk)
 
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
-    deadline = time.monotonic() + timeout_s
+    deadline = time.monotonic() + timeout_s if timeout_s else None     # no timeout: run until it finishes
     status = "ok"
     while proc.poll() is None:
         if cancel is not None and cancel.is_set():
             status = "cancelled"
-        elif time.monotonic() > deadline:
+        elif deadline is not None and time.monotonic() > deadline:
             status = "timeout"
         if status != "ok":
             kill_tree(proc.pid)

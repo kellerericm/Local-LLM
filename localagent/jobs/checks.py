@@ -17,7 +17,7 @@ from ..tools.registry import ApprovalPending
 from ..tools.process import env_for, format_result, run_process
 from ..tools.shell import PS_PREFIX
 
-CHECK_TIMEOUT_S = 300
+CHECK_TIMEOUT_S = 0            # 0 = a check runs until it finishes
 
 
 @dataclass

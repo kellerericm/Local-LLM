@@ -121,7 +121,7 @@ class JobSession(Conversation):
 
 
 class PlanSession(JobSession):
-    max_steps = 20
+    max_steps = 0                   # 0 = as long as planning takes
 
     def system_prompt(self, ctx) -> str:
         return (base_prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project) + "\n"

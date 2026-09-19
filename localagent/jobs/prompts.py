@@ -20,7 +20,7 @@ Rules for a good plan:
 - Use depends_on when a task needs another task's output.
 - Include a step to verify the final result, and a step to reconcile conflicting information when there are
   multiple sources.
-- Max 3 levels deep, max 8 subtasks per parent, at most 60 executable tasks.
+- Group related tasks under a parent. Make the plan as large as the work needs.
 
 You may look around the workspace first (list_dir, glob, grep, read_file) so the plan names real files.
 Record what every task will need to know in the job scratchpad with update_context: where the inputs are,

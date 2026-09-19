@@ -26,8 +26,12 @@ from . import register
 from .base import HandlerResult, Template, is_approval
 from .research_report import compile_report, find_sources, slug, workspace_of
 
-DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": 60, "max_rounds": 4, "per_round": 8, "seed_count": 10,
-            "screen_batch": 15, "open_access_only": "yes", "format": "md"}
+# "all" = gather every relevant paper the searches can find. Numbers are the user's to set, per job; nothing here
+# decides for them how much of a literature is worth reading.
+# Every one of these is "all" until the user sets a number: the search runs until the literature stops producing
+# relevant work it hasn't seen. 60 papers and 4 rounds were defaults of ours, not theirs.
+DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": "all", "max_rounds": "all", "per_round": "all",
+            "seed_count": "all", "screen_batch": 15, "open_access_only": "yes", "format": "md"}
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
@@ -131,9 +135,10 @@ def quota_for(c: dict, pass_: int) -> int | None:
     """How many sources a round is after: the seed count for round 0, then the per-round count. None means every
     relevant paper the searches can turn up, and the total paper limit (if the user set one) still applies."""
     want = c["seed_count"] if pass_ == 0 else c["per_round"]
-    if want is None or c["max_papers"] is None:
-        return want if c["max_papers"] is None else min(want, c["max_papers"])
-    return min(want, c["max_papers"])
+    if want is None:
+        return None                      # exhaustive: the round takes every relevant paper it can find
+    cap = c["max_papers"]
+    return min(want, cap) if cap is not None else want
 
 
 def scholar(runner) -> ScholarClient:
@@ -1013,14 +1018,17 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
     have = len([p for p in round_papers(runner, job, round_) if p["status"] == "read"])
     topups = sum(1 for t in runner.jobs.list_tasks(job["id"]) if t["key"].startswith(f"screen{round_}_t"))
     room = c["max_papers"] is None or len(read) < c["max_papers"]
-    # With no target, the round already took everything the searches had, so there is nothing left to replace with.
-    if quota is not None and have < quota and room:
+    # A round is short either because papers it chose were lost, or because it is exhaustive and there are still
+    # works it has never been shown. Both send it back to the model; only an empty candidate source ends it.
+    short = (have < quota) if quota is not None else bool(ranked_references(runner, job))
+    if short and room:
         if expand_screen(runner, job, round_, task["key"], topup=topups + 1):
-            runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers; looking for "
-                                                      f"{quota - have} replacement(s).", task["key"])
+            wanted = f"{quota - have} more" if quota is not None else "more"
+            runner.jobs.journal(job["id"], "sources", f"Round {round_} has read {have} paper(s); looking at {wanted} "
+                                                      "of the works its papers cite.", task["key"])
             write_sources_md(runner, job)
-            return HandlerResult(True, f"Round {round_} read {have} of the {quota} papers it wanted; choosing "
-                                       f"{quota - have} replacement(s) before following the citations.")
+            return HandlerResult(True, f"Round {round_} has read {have} paper(s) and there are cited works it hasn't "
+                                       f"been shown; choosing {wanted} before following the citations further.")
         runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers, and its searches "
                                                   "are exhausted, so no replacement exists.", task["key"])
 

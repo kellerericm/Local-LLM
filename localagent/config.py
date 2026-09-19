@@ -47,7 +47,7 @@ class Settings:
     repetition_penalty: float = 1.0
     max_steps: int = 0                       # 0 = no limit; a run ends when the work does or the budget does
     max_consecutive_failures: int = 0        # 0 = never abandon a task over repeated tool errors
-    tool_timeout_s: int = 300
+    tool_timeout_s: int = 0                  # 0 = a tool runs until it finishes
     host: str = "127.0.0.1"
     port: int = 8765
     resources: ResourceSettings = field(default_factory=ResourceSettings)

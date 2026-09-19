@@ -263,9 +263,8 @@ _CHECK_SCHEMA = {
 
 PROPOSE_PLAN = Tool(
     "propose_plan",
-    "Propose the job's plan as a list of tasks. Group related tasks under a parent with parent_id (max 3 levels, "
-    "max 8 subtasks per parent). Only tasks without subtasks are executed, each in a fresh context with at most "
-    "~15 tool calls, so keep them small and self-contained.",
+    "Propose the job's plan as a list of tasks. Group related tasks under a parent with parent_id. Only tasks "
+    "without subtasks are executed, each in a fresh context, so keep each one self-contained.",
     {"type": "object", "properties": {"tasks": {"type": "array", "minItems": 1, "items": {
         "type": "object",
         "properties": {

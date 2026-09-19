@@ -134,28 +134,25 @@ def test_reviewer_rejection_retries_and_removes_bad_context(env_factory, workspa
     assert not any(m["role"] == "tool" for m in review_call["messages"])
 
 
-def test_reviewer_out_of_steps_still_records_a_verdict(env_factory, workspace):
+def test_reviewer_runs_as_long_as_the_review_takes(env_factory, workspace):
+    """A review isn't cut off at a step count: it reads what it needs and then records a verdict."""
     from localagent.jobs.review import ReviewSession
     (workspace / "a.md").write_text("Alpha fact about lakes here.\n" + "".join(f"line {i}\n" for i in range(40)))
     env = env_factory([
         call("add_note", claim="Alpha", quote="Alpha fact about lakes", source="a.md"),
         call("complete_task", summary="Saved the alpha note."),
-        *[call("read_file", path="a.md", offset=i + 1, limit=1)                # reviewer dawdles (distinct reads)
-          for i in range(ReviewSession.max_steps)],
-        lambda msgs: (review("fail", issues=[{"problem": "ran out of time checking"}])
-                      if "out of steps" in msgs[-1]["content"] else "no final prompt"),
-        call("complete_task", summary="Saved the alpha note again."),
+        *[call("read_file", path="a.md", offset=i + 1, limit=1) for i in range(25)],   # a thorough reviewer
         review("pass"),
     ])
-    plan = [{"id": "t1", "title": "Note", "instructions": "Take a note from a.md", "done_when": "One note saved from a.md here",
+    assert ReviewSession.max_steps == 0                  # 0 = no ceiling on how much checking it may do
+    plan = [{"id": "t1", "title": "Note", "instructions": "Take a note from a.md",
+             "done_when": "One note saved from a.md here",
              "checks": [{"type": "notes_for_source", "source": "a.md"}]}]
     job = env.job()
     env.plan(job["id"], plan=plan)
-    t1 = env.task(job["id"], "t1")
-    env.jobs.s._exec("UPDATE job_tasks SET review=1 WHERE id=?", (t1["id"],))
-    env.runner._tick()
-    t1 = env.task(job["id"], "t1")
-    assert t1["status"] == "pending" and "ran out of time checking" in t1["guidance"][-1]
+    for _ in range(4):
+        env.runner._tick()
+    assert env.task(job["id"], "t1")["status"] == "done"
 
 
 def test_template_setup_failure_is_explained(env_factory):

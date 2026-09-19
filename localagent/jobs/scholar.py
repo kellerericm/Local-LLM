@@ -15,7 +15,7 @@ from pathlib import Path
 
 OPENALEX = "https://api.openalex.org"
 USER_AGENT = "LocalAgent-deep-research/0.1 (open-access research assistant)"
-MAX_PDF_BYTES = 60 * 2**20
+MAX_PDF_BYTES = 0              # 0 = no size limit on an open-access download
 
 
 @dataclass
@@ -315,8 +315,8 @@ class ScholarClient:
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/xml"})
                 with urllib.request.urlopen(req, timeout=60) as resp:
-                    xml = resp.read(MAX_PDF_BYTES + 1)
-                if len(xml) > MAX_PDF_BYTES:
+                    xml = resp.read(MAX_PDF_BYTES + 1) if MAX_PDF_BYTES else resp.read()
+                if MAX_PDF_BYTES and len(xml) > MAX_PDF_BYTES:
                     continue
                 text = jats_to_markdown(xml)
             except Exception:
@@ -388,8 +388,8 @@ class ScholarClient:
     def download_pdf(self, url: str, dest: Path) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/pdf,*/*;q=0.8"})
         with urllib.request.urlopen(req, timeout=60) as r:
-            data = r.read(MAX_PDF_BYTES + 1)
-        if len(data) > MAX_PDF_BYTES or not data.startswith(b"%PDF"):
+            data = r.read(MAX_PDF_BYTES + 1) if MAX_PDF_BYTES else r.read()
+        if (MAX_PDF_BYTES and len(data) > MAX_PDF_BYTES) or not data.startswith(b"%PDF"):
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)

@@ -301,7 +301,7 @@ class Coordinator:
 
         thread = threading.Thread(target=target, daemon=True, name=f"tool-{tool.name}")
         thread.start()
-        limit = tool.timeout_s or settings.tool_timeout_s
+        limit = tool.timeout_s or settings.tool_timeout_s or None      # None = run until it finishes
         active = 0.0
         while thread.is_alive():
             thread.join(0.2)

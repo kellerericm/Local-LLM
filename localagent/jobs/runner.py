@@ -344,18 +344,17 @@ class JobRunner:
     def _settle(self, job: dict, tasks: list[dict]) -> None:
         """No task is ready: the job is done, blocked on a failure, or waiting on the user."""
         leaf = leaves(tasks)
-        if leaf and all(t["status"] in T_FINISHED for t in leaf):
+        stopped = [t for t in leaf if t["status"] == T_FAILED]
+        # A task the model stopped is as final as one it finished: nothing else can run, so the job concludes.
+        if leaf and all(t["status"] in (T_FINISHED | {T_FAILED}) for t in leaf):
+            # Failures don't hold a job open for a human verdict: the job ends and says what it got, and any task
+            # can be retried afterwards, which resumes the job.
             done = sum(1 for t in leaf if t["status"] == T_DONE)
-            self.jobs.update_job(job["id"], status=DONE, status_reason=f"{done} of {len(leaf)} tasks done",
-                                 finished_at=time.time())
-            self.jobs.journal(job["id"], "done", f"Job finished: {done} tasks done, {len(leaf) - done} skipped.")
-            self._changed(job["id"])
-        elif any(t["status"] == T_FAILED for t in leaf):
-            failed = [t for t in leaf if t["status"] == T_FAILED]
-            names = ", ".join(f"[{t['key']}] {t['title']}" for t in failed[:3])
-            self.jobs.update_job(job["id"], status=PAUSED,
-                                 status_reason=f"Needs your decision: {names} failed. Retry, skip, or edit it.")
-            self.jobs.journal(job["id"], "blocked", f"Paused: {names} failed after all attempts.")
+            names = ", ".join(f"[{t['key']}] {t['title']}" for t in stopped[:3])
+            reason = f"{done} of {len(leaf)} tasks done" + (f"; stopped: {names}" if stopped else "")
+            self.jobs.update_job(job["id"], status=DONE, status_reason=reason, finished_at=time.time())
+            self.jobs.journal(job["id"], "done", f"Job finished: {done} tasks done, "
+                                                 f"{len(stopped)} stopped, {len(leaf) - done - len(stopped)} skipped.")
             self._changed(job["id"])
         elif any(t["status"] == T_WAITING for t in leaf):
             waiting = [t for t in leaf if t["status"] == T_WAITING]
@@ -531,14 +530,15 @@ class JobRunner:
                 self._attempt_failed(job, task, run, session, "checks_failed",
                                      f"A previous attempt called complete_task, but these checks failed:\n{lines}")
         elif res and res["kind"] == "fail":
-            # fail_task is the model saying it cannot do this and what would help. That is a question for the user,
-            # not something to retry silently: the task waits, visibly, and the answer becomes its guidance.
+            # fail_task is the model deciding it cannot do this and saying what would help. That decision is the
+            # model's, so the task stops there — not retried against its judgement, and not held open waiting for a
+            # human. The reason is on the record and the user can retry it whenever they like.
             help_ = f" What would help: {res['what_would_help']}" if res.get("what_would_help") else ""
-            question = f"{task['title']}: the agent couldn't finish it. {res['reason']}.{help_}"
             self.jobs.add_guidance(task["id"], f"A previous attempt gave up: {res['reason']}.{help_}")
-            self.jobs.update_task(task["id"], status=T_WAITING, question=question, waiting_kind="question")
+            self.jobs.update_task(task["id"], status=T_FAILED, attempts=task["attempts"] + 1)
             self.jobs.finish_run(run["id"], "done", "gave_up", res["reason"], session.steps)
-            self.jobs.journal(job["id"], "question", f"Asked the user: {question}", task["key"])
+            self.jobs.journal(job["id"], "failed",
+                              f"The agent stopped: {res['reason']}.{help_}", task["key"])
         elif res and res["kind"] == "ask":
             self.jobs.update_task(task["id"], status=T_WAITING, question=res["question"], waiting_kind="question")
             self.jobs.finish_run(run["id"], "done", "ask", res["question"], session.steps)

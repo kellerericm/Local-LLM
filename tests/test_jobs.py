@@ -242,9 +242,9 @@ def test_checks_failure_feeds_next_attempt(env_factory):
     assert env.task(job["id"], "t1")["status"] == "done"
 
 
-def test_giving_up_asks_the_user_and_the_answer_resumes_the_task(env_factory):
-    """fail_task is the model saying what it needs, so the task waits for an answer instead of being retried
-    silently or counted out by an attempt ceiling."""
+def test_giving_up_stops_that_task_and_the_job_concludes(env_factory):
+    """fail_task is the model's own decision, so it isn't retried against its judgement and the job doesn't hang
+    waiting for a human verdict: it ends, saying what was done and what stopped. A retry resumes it."""
     give_up = call("fail_task", reason="The data source is missing", what_would_help="Tell me where the data is")
     env = env_factory([give_up,
                        call("write_file", path="data.txt", content="x"),
@@ -253,10 +253,13 @@ def test_giving_up_asks_the_user_and_the_answer_resumes_the_task(env_factory):
     env.plan(job["id"], plan=GOOD_PLAN[:1])
     env.runner._tick()
     t1 = env.task(job["id"], "t1")
-    assert t1["status"] == "waiting_user" and t1["waiting_kind"] == "question"
-    assert "data source is missing" in t1["question"] and "Tell me where the data is" in t1["question"]
-    assert "data source is missing" in t1["guidance"][-1]
-    env.runner.answer(job["id"], "It's in D:/data/source.csv", t1["id"])
+    assert t1["status"] == "failed"                      # the model stopped; nothing retried it, nothing waited
+    assert "data source is missing" in t1["guidance"][-1] and "Tell me where the data is" in t1["guidance"][-1]
+    env.runner._tick()
+    job_row = env.jobs.get_job(job["id"])
+    assert job_row["status"] == "done" and "stopped" in job_row["status_reason"]
+    env.runner.retry_task(job["id"], t1["id"])           # the user can pick it up, whenever they like
+    assert env.jobs.get_job(job["id"])["status"] == "running"
     env.runner._tick()
     assert env.task(job["id"], "t1")["status"] == "done"
 

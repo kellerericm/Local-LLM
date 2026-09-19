@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ...coordinator.context import CHARS_PER_TOKEN
 from ..scholar import ScholarClient, Work, normalize_title, obtainable
 from ..sessions import JobApprover
 from . import register
@@ -31,7 +32,7 @@ from .research_report import compile_report, find_sources, slug, workspace_of
 # Every one of these is "all" until the user sets a number: the search runs until the literature stops producing
 # relevant work it hasn't seen. 60 papers and 4 rounds were defaults of ours, not theirs.
 DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": "all", "max_rounds": "all", "per_round": "all",
-            "seed_count": "all", "screen_batch": 15, "open_access_only": "yes", "format": "md"}
+            "seed_count": "all", "screen_batch": "", "open_access_only": "yes", "format": "md"}
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
@@ -63,7 +64,17 @@ REFS_FROM_FILE = ("Read {refs} and call record_references with its entries (titl
 REFS_NONE_FOUND = "No reference list was found in the text; call record_references with an empty list."
 REFS_KNOWN = "The reference list is already known from the scholarly index; skip this step."
 
-PART_CHARS = 12_000
+# How much material fits in one prompt, worked out from the context window in Settings rather than chosen here.
+# Half the window carries material; the rest is the task's own words and the answer it writes.
+PART_CHARS = 12_000            # fallback when no settings are to hand (tests, pure functions)
+
+
+def prompt_chars(runner, share: float = 0.5) -> int:
+    try:
+        tokens = int(runner.settings_getter().context_tokens)
+    except Exception:
+        return PART_CHARS
+    return max(2_000, int(tokens * CHARS_PER_TOKEN * share))
 
 LAYOUT = """Plan the report answering: {question}
 Read literature_digest.md, which holds every paper read: its value and key claims with note ids, plus the most-cited
@@ -127,7 +138,7 @@ def cfg(job: dict) -> dict:
     c = {**DEFAULTS, **{k: v for k, v in (job.get("inputs") or {}).items() if v not in (None, "")}}
     for k in ("max_papers", "max_rounds", "per_round", "seed_count"):
         c[k] = limit(c[k])
-    c["screen_batch"] = max(1, int(c["screen_batch"]))            # how many fit in one list, not a limit on work
+    c["screen_batch"] = max(1, int(c["screen_batch"])) if str(c["screen_batch"]).strip() else 0
     return c
 
 
@@ -461,6 +472,12 @@ def candidate_list(batch: list[dict], pass_: int, have: int, quota: int | None) 
     return "\n".join(lines).rstrip() + "\n"
 
 
+def list_size(runner, job) -> int:
+    """How many candidates go in one list: what the user asked for, or as many as fit one prompt for this model."""
+    c = cfg(job)
+    return c["screen_batch"] or max(1, prompt_chars(runner) // 900)      # ~900 chars per entry with its abstract
+
+
 def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | None:
     """Build the next numbered list: take candidates, drop the ones this job has seen, check each one can actually
     be fetched, and present only those. Unreachable works are recorded and never shown — a paper the model keeps is
@@ -533,6 +550,26 @@ def write_sources_md(runner, job) -> None:
     (workspace_of(runner, job) / "sources.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def screen_unfinished(runner, job, task) -> str | None:
+    """Called when the model tries to finish a screening round. None lets it finish: the round has its sources, or
+    there is nothing left to look at. Otherwise the next list comes back and the round goes on."""
+    c = cfg(job)
+    pass_ = int(task["params"]["pass"])
+    quota = task["params"]["quota"]
+    quota = int(quota) if quota is not None else None
+    have = len(selected_in(runner, job, pass_))
+    if quota is not None and have >= quota:
+        return None
+    undecided = [p for p in round_papers(runner, job, pass_, "candidate")]
+    text = (candidate_list(undecided, pass_, have, quota) if undecided else
+            next_list(runner, job, pass_, int(task["params"].get("batch_size") or list_size(runner, job)), quota))
+    if text is None:
+        return None                    # every search for this round is exhausted; finishing short is honest
+    wanted = f"the {quota} papers it needs" if quota is not None else "every relevant paper it can find"
+    return (f"Not finished yet: this round has {have} and is after {wanted}. Keep more from this list with "
+            f"keep_sources, or send an empty list to see the next one.\n\n{text}")
+
+
 def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
     """One turn of the selection loop, run by the keep_sources tool.
 
@@ -572,7 +609,7 @@ def screen_keep(runner, job, task, keep: list[int], note: str = "") -> str:
 
     if quota is not None and have >= quota:
         return "\n".join(lines) + "\nThis round is finished. Call complete_task now."
-    text = next_list(runner, job, pass_, int(task["params"].get("batch_size") or c["screen_batch"]), quota)
+    text = next_list(runner, job, pass_, int(task["params"].get("batch_size") or list_size(runner, job)), quota)
     if text is None:
         return "\n".join(lines) + ("\nEvery search for this round is now exhausted, so no more candidates exist. "
                                    "Call complete_task now; the job will go on with what it has.")
@@ -594,7 +631,7 @@ def expand_screen(runner, job, pass_: int, after: str) -> bool:
     candidate for the round has been judged; reading starts only when it is done."""
     c = cfg(job)
     quota = quota_for(c, pass_)
-    text = next_list(runner, job, pass_, c["screen_batch"], quota)
+    text = next_list(runner, job, pass_, list_size(runner, job), quota)
     if text is None:
         return False
     have = len(selected_in(runner, job, pass_))
@@ -603,7 +640,7 @@ def expand_screen(runner, job, pass_: int, after: str) -> bool:
     runner.jobs.append_tasks(job["id"], [{
         "key": f"screen{pass_}", "depends_on": [after],
         "title": f"Round {pass_}: choose which papers to read",
-        "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": c["screen_batch"], "lists": 1},
+        "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": list_size(runner, job), "lists": 1},
         "instructions": SCREEN.format(question=job["goal"], list=text, target=target),
         "done_when": (f"{quota} papers kept for this round, each with a copy the coordinator could fetch, or the "
                       "searches for it exhausted" if quota is not None else
@@ -641,8 +678,9 @@ _MD_HEADING = re.compile(r"^#{1,6}\s+")
 _NUMBERED = re.compile(r"^\s*\d{1,2}(?:\.\d{1,2})*\.?\s+[A-Z][^.!?\d()]{2,80}$")    # not page headers like "194 Journal (2012)"
 
 
-def split_paper(text: str) -> tuple[list[tuple[str, str]], str]:
-    """Split extracted paper text into parts of about PART_CHARS at section headings; return (parts, references)."""
+def split_paper(text: str, part_chars: int = PART_CHARS) -> tuple[list[tuple[str, str]], str]:
+    """Split extracted paper text into parts that fit one prompt, at section headings; return (parts, references).
+    However long the paper is, every word of it lands in some part."""
     lines = text.splitlines()
     markdown = sum(1 for l in lines if _MD_HEADING.match(l)) >= 3          # e.g. full text converted from PMC XML
     ref_start = None
@@ -666,15 +704,15 @@ def split_paper(text: str) -> tuple[list[tuple[str, str]], str]:
         sec_text = "\n".join(sec_lines)
         if not sec_text.strip():
             continue
-        if buf and len("\n".join(buf)) + len(sec_text) > PART_CHARS:
+        if buf and len("\n".join(buf)) + len(sec_text) > part_chars:
             parts.append((", ".join(names), "\n".join(buf)))
             names, buf = [], []
-        while len(sec_text) > PART_CHARS * 1.3:                    # a very long section: cut at a paragraph break
-            cut = sec_text.rfind("\n\n", 0, PART_CHARS)
-            if cut <= PART_CHARS // 2:
-                cut = sec_text.rfind("\n", 0, PART_CHARS)
-            if cut <= PART_CHARS // 2:
-                cut = PART_CHARS
+        while len(sec_text) > part_chars * 1.3:                    # a very long section: cut at a paragraph break
+            cut = sec_text.rfind("\n\n", 0, part_chars)
+            if cut <= part_chars // 2:
+                cut = sec_text.rfind("\n", 0, part_chars)
+            if cut <= part_chars // 2:
+                cut = part_chars
             parts.append((name, sec_text[:cut]))
             sec_text = sec_text[cut:]
             name = name.removesuffix(" (continued)") + " (continued)"
@@ -690,7 +728,7 @@ def prepare_parts(runner, job, p: dict) -> int:
 
     ws = workspace_of(runner, job)
     doc = extract(ws / p["file_path"], Path(runner.settings_getter().data_dir) / "doc_cache")
-    parts, references = split_paper(doc.text)
+    parts, references = split_paper(doc.text, prompt_chars(runner))
     folder = ws / "papers" / slug(p["key"].replace(":", "-"))[:60]
     folder.mkdir(parents=True, exist_ok=True)
     for k, (names, text) in enumerate(parts, 1):
@@ -1162,7 +1200,8 @@ DEEP_RESEARCH = register(DeepResearch(
                                                   "paper the searches can find)", "default": "10"},
         "per_round": {"type": "string", "label": "Sources to gather in each later round ('all' for every relevant "
                                                  "paper found)", "default": "8"},
-        "screen_batch": {"type": "string", "label": "Candidates per numbered list", "default": "15"},
+        "screen_batch": {"type": "string", "label": "Candidates per numbered list (blank: as many as fit one "
+                                                    "prompt)", "default": ""},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },
     handlers={"find": handle_find, "acquire": handle_acquire, "next_pass": handle_next_pass, "digest": handle_digest,

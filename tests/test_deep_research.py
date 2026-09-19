@@ -303,7 +303,7 @@ def test_config_defaults_match_decisions():
     # Nothing is capped until the user caps it: every round takes what the literature gives it.
     assert (c["max_papers"], c["max_rounds"], c["per_round"], c["seed_count"]) == (None, None, None, None)
     assert (quota_for(c, 0), quota_for(c, 1)) == (None, None)
-    assert c["screen_batch"] == 15                       # how many fit in one numbered list, not a limit on work
+    assert c["screen_batch"] == 0                        # blank: as many entries as fit one prompt
     set_by_user = cfg({"inputs": {"seed_count": "10", "max_papers": "40"}})
     assert (quota_for(set_by_user, 0), set_by_user["max_papers"]) == (10, 40)
     assert pdf_path("oa:W1").startswith("papers/pdf/")

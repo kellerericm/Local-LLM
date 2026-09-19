@@ -375,10 +375,15 @@ def test_full_text_fallback_and_long_papers_are_read_in_full(env_factory, worksp
     assert (workspace / a["Paper A"]["provenance"]["folder"] / "references.txt").read_text(encoding="utf-8").count(
         "Foster") == 1
     assert task_by_key(env, job, "w0_1") is not None                     # reading tasks for A were added
-    parts = env.jobs.get_paper(job["id"], a["Paper B"]["key"])["provenance"]["parts"]
-    assert parts > 12                                                    # 30 sections: no part limit applies
+    prov = env.jobs.get_paper(job["id"], a["Paper B"]["key"])["provenance"]
+    parts = prov["parts"]
     assert task_by_key(env, job, f"p0_2_{parts}") is not None             # every part of B gets a reading task
     assert a["Paper B"]["status"] == "reading"
+    # However the paper is cut, all 30 of its sections end up in some part: length costs steps, never content.
+    chunks = "".join((workspace / prov["folder"] / f"part-{k:02d}.md").read_text(encoding="utf-8")
+                     for k in range(1, parts + 1))
+    assert all(f"## Section {i}" in chunks for i in range(30))
+    assert chunks.count("Replay text.") == 30 * 1000
 
 
 def test_no_papers_read_ends_the_job_instead_of_writing_an_empty_report(env_factory, workspace):

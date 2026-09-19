@@ -20,7 +20,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ...coordinator.context import CHARS_PER_TOKEN
+from ...coordinator import prompts as base_prompts
+from ...coordinator.context import CHARS_PER_TOKEN, estimate_tokens
+from .. import prompts
 from ..scholar import ScholarClient, Work, normalize_title, obtainable
 from ..sessions import JobApprover
 from . import register
@@ -69,12 +71,17 @@ REFS_KNOWN = "The reference list is already known from the scholarly index; skip
 PART_CHARS = 12_000            # fallback when no settings are to hand (tests, pure functions)
 
 
-def prompt_chars(runner, share: float = 0.5) -> int:
+def room_for_material(runner, instructions: str = "", scratchpad: str = "") -> int:
+    """Characters of material that fit one prompt for this model: the context window from Settings, less the words
+    the task itself carries, less the space the reply needs, converted to characters."""
     try:
-        tokens = int(runner.settings_getter().context_tokens)
+        s = runner.settings_getter()
+        window, answer = int(s.context_tokens), int(s.max_new_tokens)
     except Exception:
         return PART_CHARS
-    return max(2_000, int(tokens * CHARS_PER_TOKEN * share))
+    overhead = estimate_tokens(base_prompts.SYSTEM_TEMPLATE) + estimate_tokens(prompts.TASK_BLOCK)
+    overhead += estimate_tokens(instructions) + estimate_tokens(scratchpad)
+    return max(2_000, int((window - answer - overhead) * CHARS_PER_TOKEN))
 
 LAYOUT = """Plan the report answering: {question}
 Read literature_digest.md, which holds every paper read: its value and key claims with note ids, plus the most-cited
@@ -473,9 +480,9 @@ def candidate_list(batch: list[dict], pass_: int, have: int, quota: int | None) 
 
 
 def list_size(runner, job) -> int:
-    """How many candidates go in one list: what the user asked for, or as many as fit one prompt for this model."""
-    c = cfg(job)
-    return c["screen_batch"] or max(1, prompt_chars(runner) // 900)      # ~900 chars per entry with its abstract
+    """How many candidates go in one list: what the user asked for, or 0 meaning 'fill the prompt', in which case
+    next_list keeps adding entries until the room runs out."""
+    return cfg(job)["screen_batch"] or 0
 
 
 def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | None:
@@ -485,10 +492,11 @@ def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | No
     client = scholar(runner)
     works: list[tuple] = []
     keys: set[str] = set()
-    while len(works) < size:
+    while not size or len(works) < size:
         # Nothing is registered until the list is complete, so this loop has to remember what it already holds:
         # otherwise a source that can't fill a whole list keeps handing back the same works.
-        fresh = [(w, label) for w, label in fetch_more(runner, job, pass_, size - len(works)) if w.key() not in keys]
+        want = (size - len(works)) if size else 40
+        fresh = [(w, label) for w, label in fetch_more(runner, job, pass_, want) if w.key() not in keys]
         if not fresh:
             break
         keys.update(w.key() for w, _ in fresh)
@@ -504,10 +512,22 @@ def next_list(runner, job, pass_: int, size: int, quota: int | None) -> str | No
                 works.append((w, label, found))
             else:
                 register_unreachable(runner, job, w, pass_, label)
-        if len(works) >= size:
+        if size and len(works) >= size:
+            break
+        if not size and len(works) >= 200:          # enough to fill any prompt; the rest come in the next list
             break
     if not works:
         return None
+    if not size:
+        # No size given: add entries until the rendered list would not leave room for the task's own words.
+        room = room_for_material(runner, SCREEN.format(question=job["goal"], list="", target=""))
+        size, used = 0, 0
+        for w, label, _found in works:
+            entry = len(w.title or "") + len((w.abstract or "")[:1200]) + 120
+            if size and used + entry > room:
+                break
+            used += entry
+            size += 1
     batch = register_candidates(runner, job, works[:size], pass_)
     text = candidate_list(batch, pass_, len(selected_in(runner, job, pass_)), quota)
     (workspace_of(runner, job) / "candidates.md").write_text(text, encoding="utf-8")
@@ -728,7 +748,11 @@ def prepare_parts(runner, job, p: dict) -> int:
 
     ws = workspace_of(runner, job)
     doc = extract(ws / p["file_path"], Path(runner.settings_getter().data_dir) / "doc_cache")
-    parts, references = split_paper(doc.text, prompt_chars(runner))
+    # The part instruction travels with every chunk, so it comes out of the room the chunk has.
+    carried = PART.format(part="x" * 60, k=99, n=99, title=p["title"], source=p["file_path"],
+                          summary="x" * 60, question=job["goal"])
+    parts, references = split_paper(doc.text, room_for_material(runner, carried,
+                                                                scratchpad=job.get("goal") or ""))
     folder = ws / "papers" / slug(p["key"].replace(":", "-"))[:60]
     folder.mkdir(parents=True, exist_ok=True)
     for k, (names, text) in enumerate(parts, 1):

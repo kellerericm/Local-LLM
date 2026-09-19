@@ -12,8 +12,10 @@ from pathlib import Path
 
 TEXT_TYPES = {".txt", ".md", ".markdown", ".rst", ".csv"}
 DOC_TYPES = TEXT_TYPES | {".pdf", ".docx"}
-MAX_FILE_BYTES = 80 * 2**20
-MAX_CHARS = 3_000_000
+# 0 = no limit. A large document is read in pages by whatever asks for it (read_document, or a job's part files),
+# so size costs time, not access.
+MAX_FILE_BYTES = 0
+MAX_CHARS = 0
 
 
 @dataclass
@@ -42,7 +44,7 @@ def extract(path: Path, cache_dir: Path | None = None) -> ExtractedText:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(str(path))
-    if path.stat().st_size > MAX_FILE_BYTES:
+    if MAX_FILE_BYTES and path.stat().st_size > MAX_FILE_BYTES:
         raise ValueError(f"{path.name} is larger than {MAX_FILE_BYTES // 2**20} MB")
     if cache_dir is not None:
         cached = _cache_path(cache_dir, path)
@@ -83,7 +85,7 @@ def extract(path: Path, cache_dir: Path | None = None) -> ExtractedText:
         text = "\n".join(blocks)
     else:
         raise ValueError(f"Unsupported document type: {suffix}")
-    text = text[:MAX_CHARS]
+    text = text[:MAX_CHARS] if MAX_CHARS else text
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         _cache_path(cache_dir, path).write_text(text, encoding="utf-8")

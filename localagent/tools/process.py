@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ import psutil
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_NO_WINDOW = 0x08000000
-OUTPUT_HEAD = 12_000
+OUTPUT_HEAD = 12_000          # how much of a long output is shown at each end; the whole of it is kept on disk
 OUTPUT_TAIL = 8_000
 
 
@@ -39,11 +40,21 @@ def kill_tree(pid: int) -> None:
     psutil.wait_procs(procs, timeout=5)
 
 
-def _truncate(text: str) -> str:
+def _truncate(text: str, keep_dir: Path | None = None) -> str:
+    """Show the ends of a long output and write the whole of it where it can be read: the middle of a build log or a
+    test run is often the part that matters, and dropping it loses the answer."""
     if len(text) <= OUTPUT_HEAD + OUTPUT_TAIL:
         return text
     skipped = len(text) - OUTPUT_HEAD - OUTPUT_TAIL
-    return f"{text[:OUTPUT_HEAD]}\n\n... [{skipped} chars of output omitted] ...\n\n{text[-OUTPUT_TAIL:]}"
+    where = ""
+    try:
+        target = Path(keep_dir or tempfile.gettempdir()) / f"command-output-{int(time.time() * 1000)}.txt"
+        target.write_text(text, encoding="utf-8", errors="replace")
+        where = f" The whole output is in {target}; read it with read_file."
+    except OSError:
+        where = ""
+    return (f"{text[:OUTPUT_HEAD]}\n\n... [{skipped} characters not shown here.{where}] ...\n\n"
+            f"{text[-OUTPUT_TAIL:]}")
 
 
 def run_process(argv: list[str], cwd: Path, env: dict, timeout_s: float,

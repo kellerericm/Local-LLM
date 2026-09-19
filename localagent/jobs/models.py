@@ -150,7 +150,8 @@ T_PENDING, T_RUNNING, T_DONE, T_FAILED, T_SKIPPED, T_WAITING = (
     "pending", "running", "done", "failed", "skipped", "waiting_user")
 T_FINISHED = {T_DONE, T_SKIPPED}
 
-DEFAULT_BUDGET = {"max_hours": 4.0, "max_steps": 400, "indefinite": False}
+# A job runs until the work is done. Hours or steps are the user's to set per job, in the job form.
+DEFAULT_BUDGET = {"max_hours": 0, "max_steps": 0, "indefinite": True}
 
 
 def slugify(text: str, suffix: str) -> str:

@@ -1,18 +1,18 @@
 """Fit a conversation into the model's context window.
 
-Token counts are estimated from character length (conservative, ~3 chars/token) so no tokenizer
-round-trip is needed. Strategy, in order:
-1. Shorten old tool outputs (everything but the most recent few messages).
-2. Drop the oldest whole turns (an assistant message together with its tool results),
-   always keeping the system prompt and the first user message, and leave a note.
+Nothing is shortened unless the window requires it, and then only as much as the window requires. Token counts are
+estimated from character length (conservative, ~3 chars/token) so no tokenizer round-trip is needed. In order:
+1. If it already fits, it is left exactly as it is.
+2. Otherwise shorten old tool outputs, oldest first, stopping the moment it fits.
+3. Only if that isn't enough, drop the oldest whole turns (an assistant message with its tool results), always
+   keeping the system prompt and the first user message, and leave a note saying so.
 """
 from __future__ import annotations
 
 import json
 
 CHARS_PER_TOKEN = 3.0
-OLD_TOOL_CHARS = 1200
-KEEP_RECENT = 8
+MIN_TOOL_CHARS = 400        # the shortest a tool result is squeezed to before turns are dropped instead
 
 
 def estimate_tokens(obj) -> int:
@@ -43,13 +43,18 @@ def fit_messages(messages: list[dict], budget_tokens: int, tools: list[dict] | N
         return messages
     budget = budget_tokens - (estimate_tokens(tools) if tools else 0)
     msgs = [dict(m) for m in messages]
-    cutoff = len(msgs) - KEEP_RECENT
-    for i, m in enumerate(msgs):
-        if i < cutoff and m["role"] == "tool" and isinstance(m.get("content"), str):
-            m["content"] = _shorten(m["content"], OLD_TOOL_CHARS)
+    if sum(estimate_tokens(m) for m in msgs) <= budget:
+        return msgs                      # it fits: the model sees every word of it
 
-    total = sum(estimate_tokens(m) for m in msgs)
-    if total <= budget:
+    # Shorten tool results from the oldest forward, and stop as soon as the conversation fits. The newest results
+    # are the ones the model is working from, so they are the last to be touched and only if the window demands it.
+    for limit in (8000, 4000, 2000, 1000, MIN_TOOL_CHARS):
+        for m in msgs[:-1]:
+            if sum(estimate_tokens(x) for x in msgs) <= budget:
+                return msgs
+            if m["role"] == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > limit:
+                m["content"] = _shorten(m["content"], limit)
+    if sum(estimate_tokens(m) for m in msgs) <= budget:
         return msgs
 
     head = [msgs[0]] if msgs[0]["role"] == "system" else []

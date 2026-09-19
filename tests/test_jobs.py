@@ -285,15 +285,20 @@ def test_ask_user_blocks_only_its_task(env_factory):
     assert env.task(job["id"], "t1")["status"] == "done"
 
 
-def test_nudge_when_task_ends_without_complete(env_factory):
+def test_a_reply_without_a_tool_call_ends_the_attempt(env_factory):
+    """The model deciding to stop talking is an outcome, not something to argue with: the attempt ends, the reply is
+    on the record, and the task is retried with that as guidance. Asking again until it complies would never end."""
     env = env_factory([call("write_file", path="data.txt", content="1"), "All finished!",
+                       call("write_file", path="data.txt", content="1"),
                        call("complete_task", summary="Wrote data.txt.")])
     job = env.job()
     env.plan(job["id"], plan=GOOD_PLAN[:1])
     env.runner._tick()
+    t1 = env.task(job["id"], "t1")
+    assert t1["status"] == "pending" and t1["attempts"] == 1        # ended without finishing; it will try again
+    assert any("All finished!" in g for g in t1["guidance"])
+    env.runner._tick()
     assert env.task(job["id"], "t1")["status"] == "done"
-    run = env.jobs.list_runs(job["id"])[-1]
-    assert any("without calling complete_task" in (m["content"] or "") for m in env.jobs.list_run_messages(run["id"]))
 
 
 def test_budget_pauses_job(env_factory):

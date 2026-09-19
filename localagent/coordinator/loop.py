@@ -23,7 +23,7 @@ from ..safety.paths import PathGuard
 from ..tools.registry import (ApprovalPending, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
                               validate_args)
 from . import prompts
-from .context import KEEP_RECENT, OLD_TOOL_CHARS, fit_messages
+from .context import MIN_TOOL_CHARS, fit_messages
 from .conversation import ChatConversation, Conversation
 
 log = logging.getLogger(__name__)
@@ -38,13 +38,14 @@ def repeat_guard(seen: dict[str, list[tuple[int, int]]], name: str, result: Tool
                  pos: int) -> ToolResult:
     """Keyed on the output, not the arguments: the model varies limits and empty queries while looping. The first
     repeat is shown with a warning; later ones are withheld and count as failures, so a loop ends in needs_help.
-    Only repeats of output the model can still see count: context fitting shortens tool results older than the last
-    KEEP_RECENT messages, and re-reading those is legitimate (dry run 8: a 7 KB outline was shortened, re-read, and
+    Only repeats of output the model can still see count: context fitting may shorten older tool results when the
+    window demands it, and re-reading those is legitimate (dry run 8: a 7 KB outline was shortened, re-read, and
     withheld)."""
     key = name + ":" + hashlib.sha1(result.content.encode("utf-8", "replace")).hexdigest()
     earlier = seen.setdefault(key, [])
-    fully_visible = len(result.content) <= OLD_TOOL_CHARS
-    earlier[:] = [(s, p) for s, p in earlier if fully_visible or pos - p <= KEEP_RECENT]
+    # Short results are never shortened by context fitting, so a repeat of one is a real repeat.
+    fully_visible = len(result.content) <= MIN_TOOL_CHARS
+    earlier[:] = [(s, p) for s, p in earlier if fully_visible or pos - p <= 8]
     earlier.append((step, pos))
     if len(earlier) == 1:
         return result

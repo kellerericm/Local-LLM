@@ -1194,12 +1194,13 @@ DEEP_RESEARCH = register(DeepResearch(
                            "of titles/DOIs", "default": ""},
         "open_access_only": {"enum": ["yes", "no"], "label": "Search only for papers we can download",
                              "default": "yes"},
-        "max_papers": {"type": "string", "label": "Max papers read ('all' for no limit)", "default": "60"},
-        "max_rounds": {"type": "string", "label": "Max citation rounds ('all' for no limit)", "default": "4"},
+        # The form offers no ceiling. A number here is the user's to type, per job.
+        "max_papers": {"type": "string", "label": "Max papers read ('all' for no limit)", "default": "all"},
+        "max_rounds": {"type": "string", "label": "Max citation rounds ('all' for no limit)", "default": "all"},
         "seed_count": {"type": "string", "label": "Sources to gather in the first round ('all' for every relevant "
-                                                  "paper the searches can find)", "default": "10"},
+                                                  "paper the searches can find)", "default": "all"},
         "per_round": {"type": "string", "label": "Sources to gather in each later round ('all' for every relevant "
-                                                 "paper found)", "default": "8"},
+                                                 "paper found)", "default": "all"},
         "screen_batch": {"type": "string", "label": "Candidates per numbered list (blank: as many as fit one "
                                                     "prompt)", "default": ""},
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},

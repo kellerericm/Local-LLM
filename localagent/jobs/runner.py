@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 # could not tell the model failing from a ceiling of ours (their instruction, 2026-09-18).
 TASK_MAX_STEPS = 0            # 0 = as many steps as the budget allows
 PLAN_MAX_ATTEMPTS = 0
-MAX_NUDGES = 2
+MAX_NUDGES = 0                # 0 = keep asking for a tool call; the budget is what ends a turn
 
 
 class JobRunner:
@@ -407,7 +407,7 @@ class JobRunner:
         try:
             outcome = self.coordinator.run(session, first_message, cancel, user_kind="coordinator")
             nudges = 0
-            while outcome == "done" and session.result is None and nudges < MAX_NUDGES and not cancel.is_set():
+            while outcome == "done" and session.result is None and (not MAX_NUDGES or nudges < MAX_NUDGES) and not cancel.is_set():
                 nudges += 1
                 outcome = self.coordinator.run(session, prompts.NUDGE, cancel, user_kind="coordinator")
         finally:

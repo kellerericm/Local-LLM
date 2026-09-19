@@ -584,25 +584,18 @@ def test_a_round_keeps_searching_until_it_has_the_number_of_sources_asked_for(en
     assert screen["status"] == "done"
 
 
-def test_a_source_lost_while_reading_is_replaced(env_factory, workspace):
-    """A paper that answers at selection but fails when its text is fetched must not shrink the round: the round
-    goes back to the model for a replacement and ends with the number of papers it asked for."""
+def test_a_source_lost_while_reading_is_recorded(env_factory, workspace):
+    """A paper that answers at selection but can't be fetched when reading starts is dropped with a record. The
+    round is not re-opened for a substitute: screening happened once, over everything, before reading began."""
     fake = DeepScholar(workspace, pages=2, per_page=4, no_download={"Deep paper 1"})
-    responses = (keep(1, summary="Deep paper 1 looks right.")           # verifies, then fails to download
-                 + keep(2, summary="Deep paper 2 instead.")             # the replacement
-                 + read_paper_responses(1))
-    env = env_factory(responses)
+    env = env_factory(keep(1, summary="Deep paper 1 looks right."))
     env.runner.scholar = fake
     job = make_job(env, seeds="replay", seed_count="1", screen_batch="2", max_rounds="0")
-    start(env, job)
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "screen0_t1") is not None, limit=30)
-
-    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0_t1") == "done", limit=60)
+    start_job = start(env, job)
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "a0_1") == "done", limit=30)
     papers = {p["title"]: p["status"] for p in env.jobs.list_papers(job["id"])}
-    assert papers["Deep paper 1"] == "unavailable"              # lost after it was chosen
-    assert papers["Deep paper 2"] == "read"                     # and replaced
-    rounds = env.jobs.get_job(job["id"])["inputs"]["citation_rounds"]
-    assert rounds[-1]["read_this_round"] == rounds[-1]["quota"] == 1
+    assert papers["Deep paper 1"] == "unavailable"
+    assert task_by_key(env, job, "screen0_t1") is None            # no second screening pass exists
     assert "dropped" in (workspace / "sources.md").read_text(encoding="utf-8")
 
 

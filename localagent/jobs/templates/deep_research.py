@@ -609,23 +609,20 @@ def _initial_plan(runner, job):
              "done_when": "candidate papers found and ranked"}]
 
 
-def expand_screen(runner, job, pass_: int, after: str, topup: int = 0) -> bool:
-    """Add a screening task for a round, with the first numbered list in its instructions. `topup` marks a second
-    visit to the same round, to replace papers lost after they were chosen."""
+def expand_screen(runner, job, pass_: int, after: str) -> bool:
+    """Add the round's screening task, with the first numbered list in its instructions. The task runs until every
+    candidate for the round has been judged; reading starts only when it is done."""
     c = cfg(job)
     quota = quota_for(c, pass_)
     text = next_list(runner, job, pass_, c["screen_batch"], quota)
     if text is None:
         return False
-    key = f"screen{pass_}_t{topup}" if topup else f"screen{pass_}"
     have = len(selected_in(runner, job, pass_))
     target = (f"This round needs {quota} papers, and has {have} so far." if quota is not None else
-              "This round takes every paper relevant to the question that can be found, so keep looking until the "
-              "lists run out.")
+              "This round takes every paper relevant to the question, so keep going until the lists run out.")
     runner.jobs.append_tasks(job["id"], [{
-        "key": key, "depends_on": [after],
-        "title": (f"Round {pass_}: choose replacement paper(s)" if topup
-                  else f"Round {pass_}: choose which papers to read"),
+        "key": f"screen{pass_}", "depends_on": [after],
+        "title": f"Round {pass_}: choose which papers to read",
         "params": {"screen": True, "pass": pass_, "quota": quota, "batch_size": c["screen_batch"], "lists": 1},
         "instructions": SCREEN.format(question=job["goal"], list=text, target=target),
         "done_when": (f"{quota} papers kept for this round, each with a copy the coordinator could fetch, or the "
@@ -636,29 +633,22 @@ def expand_screen(runner, job, pass_: int, after: str, topup: int = 0) -> bool:
 
 
 def expand_round(runner, job, round_: int) -> int:
-    """Add reading tasks for the papers a round has just chosen. A round can do this more than once, when it went
-    back for replacements, so the keys carry a suffix and the paper numbering continues."""
+    """Add reading tasks for the papers the round's screening chose."""
     papers = [p for p in runner.jobs.list_papers(job["id"], "queued") if p["round"] == round_]
     if not papers:
         return 0
-    existing = {t["key"] for t in runner.jobs.list_tasks(job["id"])}
-    seq = 0
-    while (f"round{round_}" if not seq else f"round{round_}_t{seq}") in existing:
-        seq += 1
-    suffix = f"_t{seq}" if seq else ""
-    group = f"round{round_}{suffix}"
-    first = sum(1 for k in existing if k.startswith(f"a{round_}_")) + 1
+    group = f"round{round_}"
     tasks = [{"key": group, "title": f"Round {round_}: read {len(papers)} paper(s)", "instructions": "-",
               "done_when": "-"}]
-    for i, p in enumerate(papers, first):
+    for i, p in enumerate(papers, 1):
         # Reading tasks are added once the text is available and split into parts (see expand_paper).
         tasks.append({"key": f"a{round_}_{i}", "parent_key": group, "title": f"Get: {p['title'][:70]}", "kind": "code",
                       "handler": "acquire", "params": {"paper": p["key"], "round": round_, "index": i},
                       "instructions": "-", "done_when": "paper text available, split into parts, or skipped"})
         runner.jobs.upsert_paper(job["id"], p["key"], status="reading")
-    tasks.append({"key": f"next_r{round_}{suffix}", "title": f"Round {round_}: follow the citations", "kind": "code",
+    tasks.append({"key": f"next_r{round_}", "title": f"Round {round_}: follow the citations", "kind": "code",
                   "handler": "next_pass", "depends_on": [group], "params": {"round": round_}, "instructions": "-",
-                  "done_when": "replacements chosen, the next round started, or the search stopped"})
+                  "done_when": "the next round started, or the search stopped"})
     runner.jobs.append_tasks(job["id"], tasks)
     runner.jobs.journal(job["id"], "plan", f"Round {round_}: added tasks to get and read {len(papers)} paper(s).")
     return len(papers)
@@ -1012,25 +1002,8 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
     papers = runner.jobs.list_papers(job["id"])
     read = [p for p in papers if p["status"] == "read"]
 
-    # 1. Did this round keep what it set out to? Papers lost on the way out are replaced before anything else, even
-    # when that leaves nothing read yet: losing a paper must cost the round a replacement, not a source.
     quota = quota_for(c, round_)
     have = len([p for p in round_papers(runner, job, round_) if p["status"] == "read"])
-    topups = sum(1 for t in runner.jobs.list_tasks(job["id"]) if t["key"].startswith(f"screen{round_}_t"))
-    room = c["max_papers"] is None or len(read) < c["max_papers"]
-    # A round is short either because papers it chose were lost, or because it is exhaustive and there are still
-    # works it has never been shown. Both send it back to the model; only an empty candidate source ends it.
-    short = (have < quota) if quota is not None else bool(ranked_references(runner, job))
-    if short and room:
-        if expand_screen(runner, job, round_, task["key"], topup=topups + 1):
-            wanted = f"{quota - have} more" if quota is not None else "more"
-            runner.jobs.journal(job["id"], "sources", f"Round {round_} has read {have} paper(s); looking at {wanted} "
-                                                      "of the works its papers cite.", task["key"])
-            write_sources_md(runner, job)
-            return HandlerResult(True, f"Round {round_} has read {have} paper(s) and there are cited works it hasn't "
-                                       f"been shown; choosing {wanted} before following the citations further.")
-        runner.jobs.journal(job["id"], "sources", f"Round {round_} read {have} of {quota} papers, and its searches "
-                                                  "are exhausted, so no replacement exists.", task["key"])
 
     if not read:
         lost = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
@@ -1165,8 +1138,6 @@ class DeepResearch(Template):
         elif key.startswith("next_r"):
             rounds = (runner.jobs.get_job(job["id"])["inputs"] or {}).get("citation_rounds") or []
             last = rounds[-1] if rounds else {}
-            if not rounds or rounds[-1].get("round") != int(params["round"]):
-                return                      # this round went back for replacements; it decides again afterwards
             if last.get("stop"):
                 expand_report(runner, job, last["stop"])
             elif not expand_screen(runner, job, int(params["round"]) + 1, key):

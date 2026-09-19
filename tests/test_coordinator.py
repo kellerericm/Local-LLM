@@ -270,3 +270,15 @@ def test_job_style_conversations_are_nudged_after_many_look_only_steps(store, se
     assert coord.run(conv, "gather") == "done"
     notes = [m for m in store.list_messages(chat) if m.get("kind") == "coordinator" and "only reading" in m["content"]]
     assert len(notes) == 1
+
+
+def test_tool_calls_work_with_no_timeout_set(store, settings, workspace):
+    """tool_timeout_s = 0 means a tool runs until it finishes. It must not break the comparison that watches for a
+    timeout: every tool call crashed with a TypeError that way, and each task failed in one step."""
+    settings.tool_timeout_s = 0
+    chat = project_chat(store, workspace)
+    (workspace / "a.txt").write_text("alpha\n")
+    coord, backend, _ = make(store, settings, [call("read_file", path="a.txt"), "The file says alpha."])
+    assert coord.run(chat, "read a.txt") == "done"
+    tools = [m for m in store.list_messages(chat) if m["role"] == "tool"]
+    assert tools and tools[0]["ok"] and "alpha" in tools[0]["content"]

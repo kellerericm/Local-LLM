@@ -308,7 +308,7 @@ class Coordinator:
             thread.join(0.2)
             if not ctx.awaiting_approval:
                 active += 0.2
-            if active > limit:
+            if limit and active > limit:
                 return ToolResult(f"{tool.name} did not finish within {limit}s and was abandoned. "
                                   "Try a smaller operation.", ok=False)
         return box[0] if box else ToolResult(f"{tool.name} returned nothing.", ok=False)

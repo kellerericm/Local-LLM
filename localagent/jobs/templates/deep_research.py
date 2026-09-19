@@ -62,9 +62,11 @@ REFS_KNOWN = "The reference list is already known from the scholarly index; skip
 PART_CHARS = 12_000
 
 LAYOUT = """Plan the report answering: {question}
-Read literature_digest.md (every paper read: its value and key claims with note ids, plus the most-cited works). It
-is built to fit your context; don't open the full papers/*.md write-ups. Only cite note ids that appear in the digest.
-Write outline.md once:
+Read literature_digest.md, which holds every paper read: its value and key claims with note ids, plus the most-cited
+works. It is as long as the literature requires, so read it a page at a time — read_file tells you the offset for the
+next page, and you keep going until you have seen all of it. Build outline.md as you read rather than holding it all
+in your head: write the file after the first page and add to it with edit_file as later pages bring more papers.
+Only cite note ids that appear in the digest. The finished outline.md contains:
 - '# <report title>'
 - '## Abstract' (a placeholder line; it's written last)
 - '## Introduction and scope'
@@ -91,7 +93,8 @@ factual claim with note citations like [n12]. Present disagreements between pape
 section: one '##' heading at the top and '###' for anything below it. Write the file
 once, call check_citations on it and fix any ids it lists, then call complete_task (its checks run automatically)."""
 
-ABSTRACT = """Read sections/_digest.md (the opening and key points of every section, built to fit your context) and write
+ABSTRACT = """Read sections/_digest.md, the opening and key points of every section, a page at a time (read_file
+gives you the offset for the next one) until you have seen all of it. Then write
 sections/00-abstract.md: '## Abstract', then an abstract covering the question, the scope of the literature (how many
 papers, how they were selected by citation), the main findings, the key disagreements, and the conclusion. Cite the most
 important notes like [n12], using only note ids that appear in the digest. Call check_citations on the file, fix any
@@ -99,8 +102,10 @@ ids it lists, then call complete_task.
 Facts about the scope, from the job's records (use these numbers exactly; don't count notes as papers): {facts}"""
 
 REVIEWED_ATTEMPTS = 0    # 0 = as many attempts as the budget allows; reviewed writing converges slowly
-DIGEST_CHARS = 24_000          # about 6k tokens: fits a 20k-token context with room for the task and the answer
-SECTION_DIGEST_CHARS = 16_000
+# 0 = the whole corpus. These files are read a page at a time (read_file takes an offset), and each task writes
+# what it finds into its output as it goes, so nothing has to be held in context and nothing is cut.
+DIGEST_CHARS = 0
+SECTION_DIGEST_CHARS = 0
 
 
 UNLIMITED = ("all", "none", "no limit", "unlimited", "exhaustive", "0", "-1")
@@ -838,16 +843,16 @@ def _md_section(text: str, heading: str) -> str:
 
 
 def build_digest(ws: Path, papers: list[dict], budget: int = DIGEST_CHARS) -> str:
-    """Compact view of the literature for report planning: per paper, its value assessment and key claims (with note
-    ids), capped so the whole file fits a small model's context however many papers were read."""
+    """The literature for report planning: per paper, its value assessment and key claims with note ids. With
+    budget 0 every paper is written out in full and the reader pages through it; a budget thins the entries."""
     read = sorted((p for p in papers if p["status"] == "read"), key=lambda p: (-p["cited_by_read"], p["round"]))
     head = ["# Literature digest", "", f"{len(read)} papers read. Cite notes by their ids, like [n12].", ""]
     graph = ws / "citation_graph.md"
     if graph.is_file():
         rows = [l for l in graph.read_text(encoding="utf-8").splitlines() if l.startswith("| ") and "---" not in l][:13]
         head += ["## Most-cited works (from citation_graph.md)", ""] + rows + [""]
-    # Entries thin out as papers are added (at 60 papers: title, a sentence of value, a claim or two).
-    per = max(250, (budget - len("\n".join(head))) // max(1, len(read)))
+    # With a budget, entries thin out as papers are added; with 0 they are written in full.
+    per = max(250, (budget - len("\n".join(head))) // max(1, len(read))) if budget else 10 ** 9
     out = head + ["## Papers read", ""]
     for p in read:
         md = ws / paper_md(p["key"])
@@ -884,7 +889,7 @@ def handle_digest(runner, job, task) -> HandlerResult:
 def handle_section_digest(runner, job, task) -> HandlerResult:
     ws = workspace_of(runner, job)
     files = sorted(f for f in (ws / "sections").glob("*.md") if not f.name.startswith(("_", "00-")))
-    per = max(600, SECTION_DIGEST_CHARS // max(1, len(files)))
+    per = max(600, SECTION_DIGEST_CHARS // max(1, len(files))) if SECTION_DIGEST_CHARS else 10 ** 9
     out = ["# Section digest", ""]
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace").strip()
@@ -1020,15 +1025,12 @@ def handle_next_pass(runner, job, task) -> HandlerResult:
                                                   "are exhausted, so no replacement exists.", task["key"])
 
     if not read:
-        answers = [m.group(1).lower() for g in task["guidance"]
-                   for m in [re.search(r'They answered: "(.*)"$', g, re.S)] if m]
-        if not (answers and "continue" in answers[-1]):
-            lost = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
-            # Not a failure to retry and not a limit: the job has nothing to work with and says so.
-            return HandlerResult(False, "No papers could be read", wait_question=(
-                f"None of the papers chosen so far could be read ({lost} unavailable or skipped), and the searches "
-                "for this round are exhausted. A report now would have no sources. Stop the job and start again with "
-                "a folder of PDFs or different queries, or reply 'continue' to go on anyway."))
+        lost = sum(1 for p in papers if p["status"] in ("unavailable", "skipped"))
+        # A dead end, stated: no sources exist, so there is nothing to write from. The job ends here rather than
+        # holding itself open for a human to confirm what the record already says; add papers and retry when ready.
+        return HandlerResult(False, f"No papers could be read: {lost} were unavailable or skipped and the searches "
+                                    "for this round are exhausted. A report would have no sources. Add PDFs to the "
+                                    "workspace, or start again with queries whose results are open access.")
 
     # Citation counts over everything read: they order the next round's candidates and fill the graph.
     counts: dict[str, int] = {}

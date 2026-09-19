@@ -71,7 +71,7 @@ class ReviewSession(JobSession):
         return [available[n] for n in REVIEW_TOOLS if n in available] + [SEARCH_NOTES, CHECK_CITATIONS, REPORT_REVIEW]
 
 
-CITATION_TABLE_CHARS = 9000
+CITATION_TABLE_CHARS = 0     # 0 = every cited sentence; the reviewer pages through the table
 
 
 def citation_table(workspace: Path, paths: list[str], notes: list[dict], limit: int = CITATION_TABLE_CHARS) -> str:
@@ -95,6 +95,8 @@ def citation_table(workspace: Path, paths: list[str], notes: list[dict], limit: 
                     rows.append(f'- {rel}: "{said}" -> [n{i}] {n["claim"][:160]} | quote: "{n["quote"][:160]}"')
                 else:
                     rows.append(f'- {rel}: "{said}" -> [n{i}] (no such note)')
+    if not limit:
+        return "\n".join(rows)          # every cited sentence: a reviewer shown only some of them isn't reviewing
     out, used = [], 0
     for r in rows:
         if used + len(r) > limit:

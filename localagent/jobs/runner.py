@@ -368,8 +368,7 @@ class JobRunner:
     def _unblock(self, job_id: str) -> None:
         """After retry/skip, a job that was only blocked on its tasks can continue."""
         job = self.jobs.get_job(job_id)
-        blocked_on_tasks = job["status"] == PAUSED and (job.get("status_reason") or "").startswith("Needs your decision")
-        if job["status"] in (WAITING_USER, DONE) or blocked_on_tasks:
+        if job["status"] in (WAITING_USER, DONE, PAUSED):
             self.jobs.update_job(job_id, status=RUNNING, status_reason=None, finished_at=None)
 
     def _budget_exceeded(self, job: dict, session=None) -> bool:
@@ -622,7 +621,10 @@ class JobRunner:
             attempts = task["attempts"] + 1
             if result.retry_guidance:
                 self.jobs.add_guidance(task["id"], result.retry_guidance)
-            status = T_FAILED if task["max_attempts"] and attempts >= task["max_attempts"] else T_PENDING
+            # A code task retries only when its handler says another attempt could fix it. Without that, running the
+            # same code again gives the same answer, so the task stops with the reason rather than looping.
+            retryable = bool(result.retry_guidance) and not (task["max_attempts"] and attempts >= task["max_attempts"])
+            status = T_PENDING if retryable else T_FAILED
             self.jobs.update_task(task["id"], status=status, attempts=attempts)
             self.jobs.finish_run(run["id"], "failed", "error", result.summary, 0)
             self.jobs.journal(job["id"], "failed" if status == T_FAILED else "retry", result.summary[:300], task["key"])

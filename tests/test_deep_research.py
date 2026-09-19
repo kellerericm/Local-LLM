@@ -376,17 +376,18 @@ def test_full_text_fallback_and_long_papers_are_read_in_full(env_factory, worksp
     assert a["Paper B"]["status"] == "reading"
 
 
-def test_no_papers_read_asks_instead_of_writing_an_empty_report(env_factory, workspace):
-    """A job with nothing readable is a dead end, not a task to retry forever: it asks, and waits."""
+def test_no_papers_read_ends_the_job_instead_of_writing_an_empty_report(env_factory, workspace):
+    """Nothing readable is a dead end, and the job says so and stops there: it isn't retried forever and it doesn't
+    hold itself open for someone to confirm what the record already shows."""
     env = env_factory(keep(1, 2, summary="Both look relevant."))
     env.runner.scholar = NoPdfScholar(workspace)
     job = make_job(env, seeds="replay", seed_count="2", screen_batch="3")
     start(env, job)
-    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") == "waiting_user")
-    assert "could be read" in task_by_key(env, job, "next_r0")["question"]
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "next_r0") == "failed")
     assert task_by_key(env, job, "layout") is None
-    env.runner.answer(job["id"], "continue", task_by_key(env, job, "next_r0")["id"])
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "layout") is not None)
+    runs = [r for r in env.jobs.list_runs(job["id"]) if r["task_id"] == task_by_key(env, job, "next_r0")["id"]]
+    assert any("No papers could be read" in (r["summary"] or "") for r in runs)
+    assert tick_until(env, job["id"], lambda: env.jobs.get_job(job["id"])["status"] == "done")
 
 
 def test_citation_ties_prefer_widely_cited_works_and_graph_shows_titles(env_factory, workspace):
@@ -405,8 +406,10 @@ def test_citation_ties_prefer_widely_cited_works_and_graph_shows_titles(env_fact
     assert "oa:W" not in graph
 
 
-def test_literature_digest_fits_budget_with_many_papers(tmp_path):
-    from localagent.jobs.templates.deep_research import DIGEST_CHARS, build_digest, paper_md
+def test_literature_digest_holds_every_paper_and_thins_only_under_a_budget(tmp_path):
+    """By default the digest carries every paper's claims in full and is read a page at a time. A budget, if one is
+    ever set, thins the entries instead of dropping papers."""
+    from localagent.jobs.templates.deep_research import build_digest, paper_md
     papers = []
     for i in range(60):
         key = f"oa:W{i}"
@@ -419,10 +422,13 @@ def test_literature_digest_fits_budget_with_many_papers(tmp_path):
                        "cited_by_read": 60 - i})
     papers.append({"key": "oa:Wskip", "title": "Skipped", "year": 1999, "status": "skipped", "round": 0, "cited_by_read": 9})
     text = build_digest(tmp_path, papers)
-    assert len(text) <= DIGEST_CHARS * 1.1
     assert text.count("### Paper ") == 60 and "Skipped" not in text
     assert text.index("### Paper 0 ") < text.index("### Paper 59 ")          # most-cited first
     assert "[n0]" in text and "x x x" not in text                              # claims kept, section summaries left out
+    assert text.count("[n") >= 60 * 25                                         # every claim of every paper survives
+
+    thinned = build_digest(tmp_path, papers, budget=24_000)                    # a budget still fits all 60 papers
+    assert len(thinned) <= 24_000 * 1.1 and thinned.count("### Paper ") == 60
 
 
 def test_query_seeds_run_one_search_per_line(env_factory, workspace):

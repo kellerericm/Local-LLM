@@ -3,6 +3,75 @@
 Experiments underway. Each entry: date, question, setup, status, results, conclusion.
 Move a finished experiment's conclusion into CLAUDE.md's design notes if it changes the design.
 
+## Proposed — memory mechanisms in the literature that frontier models don't implement (2026-09-20)
+Where these came from: the first ten papers of the deep_research run describe mechanisms that exist in ML research
+but are not part of how models like Claude are built. Each one below is a small experiment this repo could run, not
+a research programme. Status for all: **proposed, not started.** Open questions behind them: open_questions.md.
+
+### P-1. An offline consolidation phase ("sleep")
+- **Absent because:** training happens once, then weights are frozen. Nothing reprocesses the day's experience.
+  The ripple and spindle papers tie consolidation to experience-dependent replay during slow-wave sleep.
+- **Quick version:** after a job finishes, run an offline pass over its own notes (no new sources): re-read them in
+  batches, rewrite them into fewer, more general statements, and store that as a second layer.
+- **Measure:** answer the job's question from (a) raw notes, (b) consolidated layer, (c) both. Score on the run's
+  own citations: can each claim still be traced to a verbatim quote?
+- **Watch for:** the consolidated layer reading well while losing traceability — that is the failure mode to catch.
+
+### P-2. Two stores at different speeds (complementary learning systems)
+- **Absent because:** one parameter store, one schedule, frozen at deploy.
+- **Quick version:** keep notes+FTS as the fast store; add a slow store built only from consolidated statements
+  (P-1). Route retrieval to the slow store first, fall back to the fast one.
+- **Measure:** retrieval steps per answered question, and accuracy, against retrieval over notes alone.
+
+### P-3. Consolidation that is regulated, not automatic (Go-CLS)
+- **The paper's claim:** unregulated transfer hurts generalization; consolidation should sometimes be suppressed.
+- **Quick version:** consolidate everything vs consolidate only what a reviewer marks as supported and recurring.
+- **Measure:** performance on questions the corpus answers directly, and on questions it only implies.
+
+### P-4. A predictive map that can be re-weighted (successor representations)
+- **Absent because:** a new goal means a new prompt, not a re-weighted map.
+- **Quick version:** from a finished corpus, build a matrix of which notes co-occur in answers. For a new question,
+  score notes by that map instead of re-searching from scratch.
+- **Measure:** retrieval quality and steps for a second question on the same corpus, against plain search.
+
+### P-5. Replay as planning, with a gate on when to think
+- **The paper's claim:** the prefrontal cortex decides when to roll out; human thinking time scales with difficulty.
+- **Quick version:** before a task step, let the coordinator run k simulated rollouts (cheap: the model predicting
+  which tool sequence will work) and pick one. Vary k and let a gate choose k per task.
+- **Measure:** steps to complete bench tasks, and whether the gate spends more on the tasks that actually need it.
+
+### P-6. What earns a place in memory (Selective Experience Replay)
+- **The counterintuitive finding:** surprise-based and reward-based retention both failed; distribution matching and
+  coverage maximization worked. This cuts against prioritized replay and against how data curation usually reasons.
+- **Quick version:** the scratchpad already chooses what to carry. Compare four policies for a capped scratchpad:
+  surprise (model-flagged), recency, distribution matching, coverage of the question's sub-topics.
+- **Measure:** end-of-job report quality on a corpus with a known answer key (sandbox/lake_veyra).
+- **Note:** this is the cheapest of the set and needs no new machinery.
+
+### P-7. Salience-gated retention
+- **Absent because:** no analogue of emotional tagging decides what is kept.
+- **Quick version:** weight note retention by how often a claim is contested across papers, as a stand-in for
+  salience, and compare against uniform retention.
+
+### P-8. Alien perspectives as a condition for improvement (the user's idea, 2026-09-20)
+"Alien" here means **not visible to the observer**, not inhuman: Kantian and Hobbesian readings of the same evidence
+are alien to each other in this sense. The question is whether a system needs perspectives it cannot see from the
+inside in order to improve, and where those could come from.
+- **Is mixture-of-experts the analogue?** Probably not, and it is worth stating why. MoE experts are trained
+  jointly, on one data distribution, under one objective, with a router optimized for the same loss. They
+  specialize, but their errors are correlated by construction — which is exactly what an alien perspective is not.
+  MoE is division of labour inside one perspective.
+- **What would qualify:** a judge whose errors are uncorrelated with the worker's. Three candidate sources, in
+  increasing cost: (a) the same model asked to read the evidence under an explicitly different framework
+  (consequentialist vs deontological, mechanism-first vs statistics-first); (b) a model from a different training
+  lineage (Gemma, Llama) as reviewer; (c) something that is not a model at all — a failing test, a 403, a quote
+  that isn't in the source. This repo already relies on (c) and it is the most reliable signal in it.
+- **Quick version:** re-run the reviewer over write-ups this job has already produced, three ways: same model same
+  framing (today's behaviour), same model different framing, different family. Compare what each catches.
+- **Measure:** agreement between reviewers, and the rate of real defects found that the others missed. Agreement is
+  the thing to watch: two reviewers that agree may be one perspective sampled twice.
+- **Related:** the independent-error entry in open_questions.md, which this refines.
+
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?
 - **Design (the user's, implemented this session):** search → show the model a numbered list (title, authors, year, venue, citation count, abstract; no URLs) → it replies with numbers → the coordinator fetches each one to prove it exists, drops what it can't reach, dedupes, and shows a fresh list until the round's quota is filled → read → build the next round from the reference lists of what was read, minus everything seen → repeat until nothing novel appears or the round limit is hit.

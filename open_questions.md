@@ -52,6 +52,10 @@ cannot catch errors its own training hides. Run the reviewer on a different fami
 over this run's write-ups and measure whether rejection quality and false-alarm rate change. Cost: a model swap at
 review time, or a smaller reviewer held alongside.
 
+Eight of these are written up as small, runnable experiments in experiments.md (P-1 to P-8, proposed
+2026-09-20), including whether mixture-of-experts is an analogue for alien perspectives (probably not: its
+experts share a distribution and an objective, so their errors correlate).
+
 Questions to answer with experiments, not argument:
 - Does a LoRA trained on this job's corpus lose general tool-use ability on `bench/tasks.py`? By how much?
 - Does mixing in general instruction data (what proportion?) prevent that, and at what cost to the specialism?

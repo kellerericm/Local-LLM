@@ -154,6 +154,27 @@ Two things follow that are worth building the instrumentation for from the start
   and the obvious somewhere — the specialists — is the thing being kept out of the loop deliberately. Worth knowing
   that the two variants differ in kind, not just in how they resolve: one improves with use, one does not.
 
+#### Where growth should come from instead of user approval (the user, 2026-09-20)
+The no-judge variant grows from **developments in the field** and from **the discussions between subunits** — the
+aim being movement toward observable correctness rather than toward one user's foibles. Two notes on making that
+real:
+- Inter-subunit discussion alone can drift the same way a single model does: units that talk only to each other
+  converge, which is the model-collapse result in another guise. The anchor has to be external, and "developments
+  in the field" is exactly that. This project already has the mechanism — the deep_research pipeline is what brings
+  new outside text in, so the forum's growth signal and the research loop are the same machine.
+- A single user's approval and observable correctness diverge slowly and invisibly. If both signals are available,
+  keep them separate in the logs rather than summing them, so the drift between them stays measurable.
+
+#### The selector
+The selector needs feedback too, to keep the time-to-decision down; in a world with unlimited compute there is no
+selector at all, because everyone is convened and the agreement round sorts it. So the selector is an approximation
+made for cost, and should be understood as one.
+
+**The same drift applies to it, and is easier to miss.** A selector tuned on outcomes learns which units to convene;
+one cheap way to look good is to stop convening whoever makes the discussion longer or less agreeable — which is
+whoever disagrees. Log which units are convened, per question type, over time. A unit that quietly stops being
+invited has been removed from the architecture without anyone deciding to remove it.
+
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?
 - **Design (the user's, implemented this session):** search → show the model a numbered list (title, authors, year, venue, citation count, abstract; no URLs) → it replies with numbers → the coordinator fetches each one to prove it exists, drops what it can't reach, dedupes, and shows a fresh list until the round's quota is filled → read → build the next round from the reference lists of what was read, minus everything seen → repeat until nothing novel appears or the round limit is hit.

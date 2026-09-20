@@ -81,6 +81,41 @@ inside in order to improve, and where those could come from.
   Prerequisites it would inherit from the rest of the project: Phase 4's LoRA machinery for the specialists, and a
   corpus per framework, which the deep_research pipeline could itself gather.
 
+#### The architecture, as the user describes it (2026-09-20)
+**How the units are split.** Along field lines, which are admittedly fuzzy. Philosophies divide by school. A
+general engineering base-type forks into half a dozen engineering specialists. Alongside them: an economist, a
+biologist, an architect, a software engineer, a mathematician, a historian. The forking matters — specialists are
+split *from* a base-type rather than trained from nothing, which is what makes this affordable.
+
+**Two arrangements, both with a specialist at each end.** Something must assign the work at the front and
+something must synthesize at the back; that is true of either shape.
+1. **Blended (MoE-like).** An orchestrator at the front sets a blend over subunits, and the answer is a combination
+   of a handful of them. Units answer independently.
+2. **Forum.** Units make arguments independently, then hold rounds of discussion in the manner of a formal debate,
+   answering each other and reformulating between rounds. A judge is instantiated only if they cannot reach
+   consensus, and weighs the arguments for the final answer.
+
+**Consensus,** in the user's words: "uniform agreement within the bounds of the discussion (partly based on token
+quantity)." This needs an operational definition before it can be built or measured — see the open point below.
+
+**Who sees what.** In the arrangement where a generalist answers first and specialists comment, they see the
+generalist's answer. In the blended and forum arrangements they answer independently first; in the forum they then
+see each other, by design, because the rounds are the point.
+
+**Prompt-and-distill is acceptable as the cheap experiment**, rather than waiting for real per-framework corpora.
+
+**A limit worth stating early:** forking specialists from a shared base-type keeps their base-level errors
+correlated. It buys decorrelation across fields, not within the foundation they share — the same objection that
+applies to MoE, at a coarser grain. Whether that residue matters is measurable: have two specialists forked from
+one base review the same work and see whether their misses overlap more than chance.
+
+**Open points before this can be built:**
+- How consensus is measured. "Uniform agreement" needs a test a program can apply, and the role of token quantity
+  needs pinning down: is a position weighted by how much was said for it, or is agreement only counted over claims
+  that received enough discussion to count as addressed?
+- Whether the orchestrator sets the blend once per question or re-weighs it between rounds.
+- What ends a forum: consensus, a round count, or the judge being called. Only the third is fully specified.
+
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?
 - **Design (the user's, implemented this session):** search → show the model a numbered list (title, authors, year, venue, citation count, abstract; no URLs) → it replies with numbers → the coordinator fetches each one to prove it exists, drops what it can't reach, dedupes, and shows a fresh list until the round's quota is filled → read → build the next round from the reference lists of what was read, minus everything seen → repeat until nothing novel appears or the round limit is hit.

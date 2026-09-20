@@ -109,12 +109,36 @@ correlated. It buys decorrelation across fields, not within the foundation they 
 applies to MoE, at a coarser grain. Whether that residue matters is measurable: have two specialists forked from
 one base review the same work and see whether their misses overlap more than chance.
 
-**Open points before this can be built:**
-- How consensus is measured. "Uniform agreement" needs a test a program can apply, and the role of token quantity
-  needs pinning down: is a position weighted by how much was said for it, or is agreement only counted over claims
-  that received enough discussion to count as addressed?
-- Whether the orchestrator sets the blend once per question or re-weighs it between rounds.
-- What ends a forum: consensus, a round count, or the judge being called. Only the third is fully specified.
+#### How it resolves and ends (the user, 2026-09-20)
+**Positions are stated explicitly.** This is what makes the rest of it mechanical: a unit's position is a declared
+object, not something inferred from its prose, so support for it can be counted.
+
+**Consensus is counted over claims that were actually addressed**, not weighted by how much was said for them.
+Verbosity does not win an argument.
+
+**A final agreement round.** Each unit is asked which of the positions stated in the discussion it supports.
+- Positions with unanimous support are taken.
+- Where nothing is unanimous, the most supported is taken, meaning **50% or higher**.
+
+**Participation is decided before the discussion starts.** A selector at the front sorts the prompt to the relevant
+subunits; the roster does not change mid-discussion.
+
+**The judge's blend is updated at the end of each round** — so in the judge variant the judge is present throughout,
+re-weighing as the discussion develops, rather than being called in only at a deadlock.
+
+**A fixed number of rounds ends it**, in both variants.
+- With a judge: the final blend is what the user sees.
+- Without: the final agreement round is what the user sees, presented for them to parse.
+
+**Base-level error is expected, and is not the thing to fix.** The base-type exists for breadth of exposure. A
+philosophy unit keeps its exposure to several frameworks after drilling into one, the way a person who specializes
+does not lose what they first read. An engineering base carries physics, mathematics and design principle and
+procedure, and the specialists are that base modified by sub-field approaches. So the shared foundation is the
+point, not a defect to be engineered away — what the arrangement buys is decorrelation across fields.
+
+**Residual open point:** what happens when no position reaches 50% in the final agreement round. Ties are also
+reachable with an even roster. Options, none chosen: report the disagreement as the answer, let the judge break it,
+or run another round.
 
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?

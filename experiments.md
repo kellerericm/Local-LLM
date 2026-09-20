@@ -154,6 +154,14 @@ Two things follow that are worth building the instrumentation for from the start
   and the obvious somewhere — the specialists — is the thing being kept out of the loop deliberately. Worth knowing
   that the two variants differ in kind, not just in how they resolve: one improves with use, one does not.
 
+#### Why the split is worth having, not just a caveat about it (2026-09-20)
+Drift toward the user's preferences is not a hazard this design introduces: it is what reinforcement learning from
+human feedback does by construction, and it is the state of the art. What the split adds is that the drift becomes
+**measurable**. In a monolithic model the thing that drifts and the reference you would measure it against are the
+same weights, so there is nothing to compare. Here the specialists are frozen, so the unweighted final agreement
+round is a fixed reference, and the judge's divergence from it is a number that can be logged per question and
+watched over months. That diagnostic is a consequence of the architecture rather than something added to it.
+
 #### Where growth should come from instead of user approval (the user, 2026-09-20)
 The no-judge variant grows from **developments in the field** and from **the discussions between subunits** — the
 aim being movement toward observable correctness rather than toward one user's foibles. Two notes on making that

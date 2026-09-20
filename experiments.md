@@ -71,6 +71,15 @@ inside in order to improve, and where those could come from.
 - **Measure:** agreement between reviewers, and the rate of real defects found that the others missed. Agreement is
   the thing to watch: two reviewers that agree may be one perspective sampled twice.
 - **Related:** the independent-error entry in open_questions.md, which this refines.
+- **The user's shape for it (2026-09-20):** a group of LLMs, or an MoE-like arrangement, in which each subunit is
+  **specially trained rather than left to specialize emergently on one corpus** — separate models or LoRAs fine-tuned
+  to different frameworks, working alongside a generalist. The point of training them apart is precisely to stop
+  their errors from correlating, which is what an MoE router trained on one loss cannot give you.
+- **Their answer on sources of independence:** the non-model signal (c) is sufficient for now, especially at this
+  stage; the trained-specialists idea is the longer line.
+- **Not to be worked on** until the research pipeline is tested end to end. Documentation only until then.
+  Prerequisites it would inherit from the rest of the project: Phase 4's LoRA machinery for the specialists, and a
+  corpus per framework, which the deep_research pipeline could itself gather.
 
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?

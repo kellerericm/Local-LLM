@@ -136,9 +136,23 @@ does not lose what they first read. An engineering base carries physics, mathema
 procedure, and the specialists are that base modified by sub-field approaches. So the shared foundation is the
 point, not a defect to be engineered away — what the arrangement buys is decorrelation across fields.
 
-**Residual open point:** what happens when no position reaches 50% in the final agreement round. Ties are also
-reachable with an even roster. Options, none chosen: report the disagreement as the answer, let the judge break it,
-or run another round.
+**When nothing reaches 50%.** In the no-judge variant, post the document and say there is no agreement. The
+disagreement is the result, not a failure to produce one. In the judge variant the judge presents, as it always
+does.
+
+**Where learning enters: the judge.** The judge is the component modified by a reinforcement loop on user utility —
+it presents the answer and takes the feedback. The specialists are not in that loop, which keeps them fixed and so
+keeps their errors decorrelated: the judge learns *how to weigh*, not what is true.
+
+Two things follow that are worth building the instrumentation for from the start:
+- **A judge on user utility will drift toward what the user approves of.** With frozen specialists the drift has a
+  visible signature: the weight on whichever unit most often disagrees with the user decays over time. Log per-unit
+  weights per round and watch for monotonic decay — a judge learning to silence dissent looks exactly like a judge
+  getting better, on the utility metric alone. Since dissent is the reason the specialists exist, that failure
+  would quietly remove the point of the architecture.
+- **The no-judge variant has no learning signal at all.** It is static unless user feedback is routed somewhere,
+  and the obvious somewhere — the specialists — is the thing being kept out of the loop deliberately. Worth knowing
+  that the two variants differ in kind, not just in how they resolve: one improves with use, one does not.
 
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?

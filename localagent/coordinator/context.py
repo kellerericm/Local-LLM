@@ -24,7 +24,15 @@ def _shorten(content: str, limit: int) -> str:
     if len(content) <= limit:
         return content
     half = limit // 2
-    return f"{content[:half]}\n... [{len(content) - limit} chars elided from an older tool result] ...\n{content[-half:]}"
+    # Say plainly that this is the coordinator shortening the history, not the file being cut off. The old wording
+    # ("chars elided from an older tool result") read as truncation, and one task re-read the same part twenty-six
+    # times trying to get the rest of it.
+    return (f"{content[:half]}\n"
+            f"... [The middle {len(content) - limit} characters of this earlier result are hidden here to keep the "
+            "conversation inside the context window. The file itself is complete and unchanged. Reading it again "
+            "returns the same thing and is hidden the same way — work from what you have, or read one part of it "
+            "with an offset.] ...\n"
+            f"{content[-half:]}")
 
 
 def _groups(messages: list[dict]) -> list[list[dict]]:

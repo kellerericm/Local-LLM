@@ -43,8 +43,8 @@ class Settings:
     # the window with material instead left nothing for the other two, and a task paged through one 33k-character
     # part for nine hours without finishing it.
     reading_share_pct: int = 50
-    reasoning_share_pct: int = 25
-    output_share_pct: int = 25
+    reasoning_share_pct: int = 10
+    output_share_pct: int = 20
     max_new_tokens: int = 4096
     temperature: float = 0.6
     top_p: float = 0.95

@@ -592,11 +592,11 @@ const PRESET_FIELDS = ["thinking", "temperature", "top_p", "top_k", "min_p", "pr
 function generationEditor(values, profile, { allowDefault = false, defaultLabel = "" } = {}) {
   const docs = profile.docs;
   const inputs = {};
-  const numField = (key, label, step) => {
+  const numField = (key, label, step, hint) => {
     const [lo, hi] = profile.limits[key] || [];
     inputs[key] = h("input", { type: "number", step, min: lo, max: hi, value: values[key] ?? "" });
     inputs[key].addEventListener("input", () => { presetSel.value = "custom"; showNote(); });
-    return field(label, inputs[key], docs[key]);
+    return field(label, inputs[key], hint || docs[key]);
   };
   const presetSel = h("select", {},
     allowDefault ? h("option", { value: "__default__" }, `Use app default${defaultLabel ? ` (${defaultLabel})` : ""}`) : null,
@@ -623,7 +623,8 @@ function generationEditor(values, profile, { allowDefault = false, defaultLabel 
     showNote();
   });
 
-  const budgetField = numField("thinking_budget", "Reasoning budget (tokens, 0 = no limit)", "256");
+  const budgetField = numField("thinking_budget", "Reasoning budget (tokens)", "256",
+    "Derived from the reasoning share of the context window in Settings; editing it here overrides that for this chat.");
   const syncBudget = () => { inputs.thinking_budget.disabled = !thinking.checked; };
   const el = h("div", { class: "gen-editor" },
     h("div", { class: "grid2" },
@@ -750,6 +751,12 @@ async function settingsDialog() {
       field("Model (Hugging Face id or local folder)", modelInput, familyLine),
       field("Quantization", quant, profile.docs.quantization),
       field("Context window (tokens)", num("context_tokens", s, "1024"), contextHint),
+      field("Reading budget (% of context)", num("reading_share_pct", s, "5"),
+            "The document material a task is given. Too high and a task pages through one chunk without finishing."),
+      field("Reasoning budget (% of context)", num("reasoning_share_pct", s, "5"),
+            "What the model may spend thinking. Sets the reasoning token budget."),
+      field("Output budget (% of context)", num("output_share_pct", s, "5"),
+            "What it may write. The three add up to the context window; if they exceed it they are scaled back."),
       field("Tool-call format", (inputs.tool_call_format = h("select", {}, ["auto", "hermes", "qwen3_coder"].map((f) => h("option", { value: f, selected: s.tool_call_format === f }, f)))), profile.docs.tool_call_format),
       field("Models folder (download cache)", text("models_dir")),
       field("Default Python environment", text("env_path"))),

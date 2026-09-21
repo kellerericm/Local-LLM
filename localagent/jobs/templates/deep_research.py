@@ -72,16 +72,21 @@ PART_CHARS = 12_000            # fallback when no settings are to hand (tests, p
 
 
 def room_for_material(runner, instructions: str = "", scratchpad: str = "") -> int:
-    """Characters of material that fit one prompt for this model: the context window from Settings, less the words
-    the task itself carries, less the space the reply needs, converted to characters."""
+    """Characters of material a task may be given in one prompt: the context window from Settings, less the words
+    the task carries and the space its reply needs, and then only the share of what remains that Settings allots to
+    material (reading_share_pct). The rest is headroom — the model re-reads, and it reasons, and both land in the
+    same window. A chunk that fills the window leaves nothing for either, and the task pages in circles."""
     try:
         s = runner.settings_getter()
-        window, answer = int(s.context_tokens), int(s.max_new_tokens)
+        window = int(s.context_tokens)
+        share = max(1, min(100, int(getattr(s, "reading_share_pct", 50)))) / 100
     except Exception:
         return PART_CHARS
+    # The reading share is the whole allowance for what the task is given, and the words of the task come out of it.
+    # Reasoning and output have their own shares of the same window and are not deducted here.
     overhead = estimate_tokens(base_prompts.SYSTEM_TEMPLATE) + estimate_tokens(prompts.TASK_BLOCK)
     overhead += estimate_tokens(instructions) + estimate_tokens(scratchpad)
-    return max(2_000, int((window - answer - overhead) * CHARS_PER_TOKEN))
+    return max(2_000, int((window * share - overhead) * CHARS_PER_TOKEN))
 
 LAYOUT = """Plan the report answering: {question}
 Read literature_digest.md, which holds every paper read: its value and key claims with note ids, plus the most-cited

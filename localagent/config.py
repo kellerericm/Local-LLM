@@ -38,6 +38,13 @@ class Settings:
     thinking: bool = True
     thinking_budget: int = 0                 # max reasoning tokens per reply; 0 = no limit
     context_tokens: int = 20000            # 16 GB GPU + Qwen3.5-9B 4-bit: >~22k overflows VRAM (experiments.md)
+    # The window is split three ways, and the three shares are bounded by it. Reading is the material a task is
+    # given (a chunk of a document); reasoning is what it may spend thinking; output is what it may write. Filling
+    # the window with material instead left nothing for the other two, and a task paged through one 33k-character
+    # part for nine hours without finishing it.
+    reading_share_pct: int = 50
+    reasoning_share_pct: int = 25
+    output_share_pct: int = 25
     max_new_tokens: int = 4096
     temperature: float = 0.6
     top_p: float = 0.95
@@ -87,6 +94,22 @@ class Settings:
                 data["resources"].update(v)
             elif k != "data_dir":
                 data[k] = v
+        return Settings.from_dict(data).with_budgets()
+
+    def with_budgets(self) -> "Settings":
+        """Keep the three shares inside the window, and derive the generation numbers from them. max_new_tokens is
+        a whole reply including its thinking, so it carries the reasoning and output shares together."""
+        shares = [max(0, int(self.reading_share_pct)), max(0, int(self.reasoning_share_pct)),
+                  max(0, int(self.output_share_pct))]
+        total = sum(shares) or 1
+        if total > 100:                                   # scale back proportionally rather than refuse a save
+            shares = [int(x * 100 / total) for x in shares]
+        read_s, think_s, out_s = shares
+        window = max(1024, int(self.context_tokens))
+        data = self.to_dict()
+        data.update(reading_share_pct=read_s, reasoning_share_pct=think_s, output_share_pct=out_s,
+                    max_new_tokens=max(256, window * (think_s + out_s) // 100),
+                    thinking_budget=window * think_s // 100)
         return Settings.from_dict(data)
 
 

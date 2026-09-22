@@ -81,14 +81,14 @@ def edit_file(ctx: ToolContext, path: str, old_text: str, new_text: str, replace
     return ToolResult(f"Edited {p}: replaced {count if replace_all else 1} occurrence(s).")
 
 
-def list_dir(ctx: ToolContext, path: str = ".", offset: int = 1) -> ToolResult:
+def list_dir(ctx: ToolContext, path: str = ".", offset: int = 1, limit: int = 0) -> ToolResult:
     p = ctx.check_path(path, "read")
     if not p.is_dir():
         raise ToolError(f"Not a directory: {p}")
     entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
     start = max(1, offset) - 1
     rows = []
-    for e in entries[start:start + LIST_PAGE]:
+    for e in entries[start:start + (limit or LIST_PAGE)]:
         if e.is_dir():
             rows.append(f"{e.name}/")
         else:
@@ -130,7 +130,7 @@ def _walk(root: Path):
             yield Path(dirpath) / name
 
 
-def glob_files(ctx: ToolContext, pattern: str, path: str = ".", offset: int = 1) -> ToolResult:
+def glob_files(ctx: ToolContext, pattern: str, path: str = ".", offset: int = 1, limit: int = 0) -> ToolResult:
     root = ctx.check_path(path, "read")
     matches = []
     for f in _walk(root):
@@ -140,7 +140,7 @@ def glob_files(ctx: ToolContext, pattern: str, path: str = ".", offset: int = 1)
     if not matches:
         return ToolResult(f"No files under {root} match {pattern!r}.")
     start = max(1, offset) - 1
-    page = matches[start:start + MATCH_PAGE]
+    page = matches[start:start + (limit or MATCH_PAGE)]
     end = start + len(page)
     note = f"\n... {len(matches) - end} more; continue with offset={end + 1}" if end < len(matches) else ""
     return ToolResult(f"{len(matches)} match(es) under {root}, showing {start + 1}-{end}:\n"
@@ -148,7 +148,7 @@ def glob_files(ctx: ToolContext, pattern: str, path: str = ".", offset: int = 1)
 
 
 def grep(ctx: ToolContext, pattern: str, path: str = ".", file_glob: str | None = None,
-         ignore_case: bool = False, offset: int = 1) -> ToolResult:
+         ignore_case: bool = False, offset: int = 1, limit: int = 0) -> ToolResult:
     root = ctx.check_path(path, "read")
     try:
         rx = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
@@ -173,7 +173,7 @@ def grep(ctx: ToolContext, pattern: str, path: str = ".", file_glob: str | None 
         return ToolResult(f"No matches for {pattern!r} under {root}{scope}. "
                           + ("Try again without file_glob to search all files." if file_glob else ""))
     start = max(1, offset) - 1
-    page = hits[start:start + MATCH_PAGE]
+    page = hits[start:start + (limit or MATCH_PAGE)]
     end = start + len(page)
     note = f"\n... {len(hits) - end} more match(es); continue with offset={end + 1}" if end < len(hits) else ""
     header = f"{len(hits)} match(es), showing {start + 1}-{end}:\n" if len(hits) > len(page) else ""
@@ -199,17 +199,20 @@ TOOLS = [
           "required": ["path", "old_text", "new_text"]}, edit_file, "files"),
     Tool("list_dir", "List the entries of a directory. Long listings are paged; the result says how to see the rest.",
          {"type": "object", "properties": {"path": {"type": "string", "description": "Directory (default: workspace)."},
-                                           "offset": {"type": "integer", "minimum": 1, "description": "first entry to show; page through with the offset the result gives"}}},
+                                           "offset": {"type": "integer", "minimum": 1, "description": "first entry to show; page through with the offset the result gives"},
+                                           "limit": {"type": "integer", "minimum": 1, "description": "how many to return in this call; omit for a full page"}}},
          list_dir, "files"),
     Tool("glob", "Find files by name pattern, e.g. '*.py' or 'src/**/*.md'. Results are paged, never cut off.",
          {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"},
-                                           "offset": {"type": "integer", "minimum": 1, "description": "first entry to show; page through with the offset the result gives"}},
+                                           "offset": {"type": "integer", "minimum": 1, "description": "first entry to show; page through with the offset the result gives"},
+                                           "limit": {"type": "integer", "minimum": 1, "description": "how many to return in this call; omit for a full page"}},
           "required": ["pattern"]}, glob_files, "files"),
     Tool("grep", "Search file contents with a regular expression. Returns file:line: text.",
          {"type": "object", "properties": {
              "pattern": {"type": "string"}, "path": {"type": "string"},
              "file_glob": {"type": "string", "description": "Only search files whose name matches, e.g. '*.py'."},
              "ignore_case": {"type": "boolean"},
-             "offset": {"type": "integer", "minimum": 1, "description": "first entry to show; page through with the offset the result gives"}},
+             "offset": {"type": "integer", "minimum": 1, "description": "first entry to show; page through with the offset the result gives"},
+             "limit": {"type": "integer", "minimum": 1, "description": "how many to return in this call; omit for a full page"}},
           "required": ["pattern"]}, grep, "files"),
 ]

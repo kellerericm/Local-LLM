@@ -4,7 +4,7 @@ import pytest
 
 from localagent.config import Settings
 from localagent.safety import AutoApprover, CommandPolicy, PathGuard
-from localagent.tools.fs import glob_files, glob_match, grep
+from localagent.tools.fs import glob_files, glob_match, grep, list_dir
 from localagent.tools.registry import ToolContext
 
 
@@ -57,3 +57,14 @@ def test_repair_double_escaped_python():
 def test_glob_tool_path_pattern(ctx):
     out = glob_files(ctx, "app/**/*.py").content
     assert "app/main.py" in out and "app/db/models.py" in out
+
+
+def test_search_tools_take_limit_like_read_file(ctx, workspace):
+    """read_file takes limit, so the model assumes grep and the others do too — and a rejected call costs a step."""
+    (workspace / "a.txt").write_text("hit one\nhit two\nhit three\n")
+    (workspace / "b.txt").write_text("hit four\n")
+    assert "hit two" not in grep(ctx, "hit", limit=1).content
+    assert len([l for l in grep(ctx, "hit", limit=2).content.splitlines() if ": hit" in l]) == 2
+    one = list_dir(ctx, ".", limit=1).content.splitlines()
+    assert one[0].startswith("entries 1-1 of") or "entries 1-1" in one[0]     # the page, not the whole directory
+    assert len([l for l in glob_files(ctx, "*.txt", limit=1).content.splitlines() if ".txt" in l]) == 1

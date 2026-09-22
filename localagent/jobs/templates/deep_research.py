@@ -38,8 +38,14 @@ DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": "all", "max_rounds"
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
-PART = """Read {part} with read_file. It is part {k} of {n} of the paper "{title}" (the full paper is {source}; you
-don't need to open it). Write {summary} once, containing, for each section that appears in this part, '### <section
+PART = """Read {part} once with read_file, then work from what is in front of you. It is part {k} of {n} of the
+paper "{title}" (the full paper is {source}; you don't need to open it).
+
+Analyse the text you can see, whatever state it is in. If it looks cut off, or a middle section is marked as hidden,
+that is the coordinator keeping this conversation inside the context window — not a failure to read the file. Reading
+it again returns the same thing and gets shortened the same way. There is no complete view to go and fetch, and
+nothing is lost by working from the text you have: the parts you cannot see are covered by the other parts of this
+paper, which have their own tasks. Write {summary} once, containing, for each section that appears in this part, '### <section
 name>' followed by a summary of what it says. Then, for every claim in this part that bears on the research question
 ({question}), call add_note with source "{part}", the section as location, and a quote copied character for character
 from {part} (one sentence or a shorter phrase is best). Save as many as the part supports: these notes are the corpus,

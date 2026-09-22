@@ -183,6 +183,31 @@ one cheap way to look good is to stop convening whoever makes the discussion lon
 whoever disagrees. Log which units are convened, per question type, over time. A unit that quietly stops being
 invited has been removed from the architecture without anyone deciding to remove it.
 
+### P-9. Prompts that capture a repeatable experiment, not just a summary (the user, 2026-09-22)
+**The point being missed:** the aim of reading a literature this way is as much to be able to **repeat the
+experiments and test their results** as it is to have the background. The current prompts do not aim at that. A part
+task asks for section summaries and claims with verbatim quotes; a write-up asks for contribution, methods, evidence
+and value. All of that supports a literature review and none of it supports rerunning anything.
+
+**What is missing from a note or a write-up today:** the quantities you would need to reproduce a result — the
+setup, the data and where it came from, sample sizes, the parameters and their values, the metric and how it was
+computed, the baseline it was measured against, the hardware or scale, and the reported numbers with their error
+bars. Also what the authors say they could not do, which is usually where a replication actually fails.
+
+**Quick version:** add a second output to the per-paper write-up, a reproduction card, and judge it by whether
+someone could start from it: for a computational paper, enough to write the training script; for an experimental
+one, enough to state the protocol and what would count as the same result. Run it over papers already read (the
+corpus is on disk, so this costs no searching) and compare the cards against the papers.
+
+**Measure:** hand the card to a fresh session with no access to the paper and ask it to write the method section or
+the script. Score what it gets wrong or cannot fill in. That failure list is the spec for the prompt.
+
+**Also worth revisiting while in there:** the current part instruction was written to stop a loop (read once, work
+from what is in front of you) and is aimed at extraction, not at judging whether a result is worth reproducing.
+Those are different jobs and may want different tasks rather than one prompt carrying both.
+
+**Status: proposed, not started.** Not to be worked on until the pipeline finishes a run end to end.
+
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?
 - **Design (the user's, implemented this session):** search → show the model a numbered list (title, authors, year, venue, citation count, abstract; no URLs) → it replies with numbers → the coordinator fetches each one to prove it exists, drops what it can't reach, dedupes, and shows a fresh list until the round's quota is filled → read → build the next round from the reference lists of what was read, minus everything seen → repeat until nothing novel appears or the round limit is hit.

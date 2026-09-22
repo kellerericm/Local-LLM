@@ -38,19 +38,28 @@ DEFAULTS = {"seed_mode": "query", "seeds": "", "max_papers": "all", "max_rounds"
 NET_KEY = "net:open-access"
 PDF_DIR = "papers/pdf"
 
-PART = """Read {part} once with read_file, then work from what is in front of you. It is part {k} of {n} of the
-paper "{title}" (the full paper is {source}; you don't need to open it).
+PART = """The paper "{title}" has been split into {n} sections so that each one fits in your context. You have
+section {k} of {n}, in {part}. The other {others} are handled by their own tasks, before and after this one — you
+will not see them, you are not missing them, and nothing in them is your responsibility. Everything you produce here
+is about section {k} alone.
 
-Analyse the text you can see, whatever state it is in. If it looks cut off, or a middle section is marked as hidden,
-that is the coordinator keeping this conversation inside the context window — not a failure to read the file. Reading
-it again returns the same thing and gets shortened the same way. There is no complete view to go and fetch, and
-nothing is lost by working from the text you have: the parts you cannot see are covered by the other parts of this
-paper, which have their own tasks. Write {summary} once, containing, for each section that appears in this part, '### <section
-name>' followed by a summary of what it says. Then, for every claim in this part that bears on the research question
-({question}), call add_note with source "{part}", the section as location, and a quote copied character for character
-from {part} (one sentence or a shorter phrase is best). Save as many as the part supports: these notes are the corpus,
-and anything you leave out is lost to every later step. If a quote is rejected, copy a shorter phrase from the part or
-move on to the next claim. Work only on this part, then call complete_task."""
+1. Read {part} once with read_file, then work from what is in front of you. If it looks cut off, or a middle stretch
+   is marked as hidden, that is the coordinator keeping this conversation inside the context window, not a failure to
+   read the file. Reading it again returns the same thing and is hidden the same way.
+
+2. Write {summary} once: for each heading that appears in this section, '### <heading>' and a summary of what it says.
+
+3. Then take notes on this section with add_note, one call per point worth keeping. Write them for the person who
+   comes after you: someone who wants to build on this work or fold its findings into their own, and who will never
+   read the paper itself. That person needs what was done and how — the method, the data and where it came from, the
+   settings and quantities, what was measured and against what baseline, the numbers with whatever error the authors
+   give, and the limits and failures the authors admit to. Take as many notes as the section carries; what you leave
+   out is lost to every later step.
+
+   Each note goes in with source "{part}", the heading it came from as the location, and a quote copied character
+   for character from {part}. If a quote is rejected, shorten it to a phrase you can see verbatim, or move on.
+
+4. Call complete_task. The research question this serves, for judging what matters: {question}"""
 
 ASSEMBLE = """Assemble the write-up of "{title}". Steps, each done once:
 1. Read the part summaries: {summaries}.
@@ -760,7 +769,7 @@ def prepare_parts(runner, job, p: dict) -> int:
     ws = workspace_of(runner, job)
     doc = extract(ws / p["file_path"], Path(runner.settings_getter().data_dir) / "doc_cache")
     # The part instruction travels with every chunk, so it comes out of the room the chunk has.
-    carried = PART.format(part="x" * 60, k=99, n=99, title=p["title"], source=p["file_path"],
+    carried = PART.format(part="x" * 60, k=99, n=99, others="98 sections", title=p["title"],
                           summary="x" * 60, question=job["goal"])
     parts, references = split_paper(doc.text, room_for_material(runner, carried,
                                                                 scratchpad=job.get("goal") or ""))
@@ -794,7 +803,8 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
         tasks.append({"key": key, "parent_key": group, "title": f"Read part {k}/{n}: {p['title'][:60]}",
                       "depends_on": [acquire_task["key"]],
                       "params": {"paper": p["key"], "part": k, "part_file": part, "paper_source": p["file_path"]},
-                      "instructions": PART.format(part=part, k=k, n=n, title=p["title"], source=p["file_path"],
+                      "instructions": PART.format(part=part, k=k, n=n, title=p["title"],
+                                                  others=("section" if n == 2 else f"{n - 1} sections"),
                                                   summary=summary, question=job["goal"]),
                       "done_when": f"{summary} exists with section summaries",
                       # "## " also matches "### ": accept either heading level (run 6 failed 3 times on "## Abstract")

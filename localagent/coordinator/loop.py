@@ -1,7 +1,8 @@
 """The agent loop: generate → parse tool calls → validate → gate → execute → repeat.
 
-Error handling philosophy: failures are fed back to the model as information. Consecutive failures
-past a limit make the agent stop and ask the user for help instead of flailing.
+Error handling philosophy: failures are fed back to the model as information. Nothing here bounds a run by
+default: the bounds a real task needs are not known before it runs, so they are the user's to set. Debug mode
+(settings.debug_mode) adds limits that exist to make a fault show itself during investigation, not to run work.
 
 The loop runs over a Conversation (conversation.py): a chat turn or a job task session.
 """
@@ -53,9 +54,10 @@ def repeat_guard(seen: dict[str, list[tuple[int, int]]], name: str, result: Tool
     if len(earlier) == 2:
         return ToolResult(f"(This is exactly the same output you got at step {steps}; nothing has changed since. "
                           "Don't fetch it again: use it and move on.)\n" + result.content)
-    return ToolResult(f"Not shown: this {name} call returned exactly the same output as at steps {steps}, and nothing "
-                      "has changed since. Stop re-checking and act on what you know: write the file, make the change, "
-                      "or finish (for a task, call complete_task; its checks run automatically).", ok=False)
+    text = (f"Not shown: this {name} call returned exactly the same output as at steps {steps}, and nothing "
+            "has changed since. Stop re-checking and act on what you know: write the file, make the change, "
+            "or finish (for a task, call complete_task; its checks run automatically).")
+    return ToolResult(text, ok=False, repeats=len(earlier))
 
 Emit = Callable[[dict], None]
 
@@ -174,6 +176,16 @@ class Coordinator:
                     pos += 1
                     if call["name"] in READ_ONLY_TOOLS and result.ok:
                         result = repeat_guard(seen, call["name"], result, step, pos)
+                        stop_at = (int(getattr(settings, "debug_stop_after_repeats", 0) or 0)
+                                   if getattr(settings, "debug_mode", False) else 0)
+                        if stop_at and result.repeats >= stop_at:
+                            # A debugging aid, off unless someone turns it on: make a loop stop and say so, rather
+                            # than run until a person notices it.
+                            note = (f"\n\n[debug_stop_after_repeats={stop_at}: this output has come back "
+                                    f"{result.repeats} times, so the run is being stopped here for inspection.]")
+                            self._add(conv, "tool", result.content + note, tool_call_id=call["id"],
+                                      name=call["name"], ok=False)
+                            return "needs_help"
                     elif call["name"] not in READ_ONLY_TOOLS and result.ok:
                         seen.clear()                 # something may have changed: earlier reads are stale
                     oks.append(result.ok)

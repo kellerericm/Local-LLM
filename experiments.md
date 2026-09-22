@@ -208,6 +208,28 @@ Those are different jobs and may want different tasks rather than one prompt car
 
 **Status: proposed, not started.** Not to be worked on until the pipeline finishes a run end to end.
 
+### P-10. A synthesis pass per paper, to make section notes cohere (the user, 2026-09-22)
+**Why it might be needed:** notes are taken one section at a time, in separate tasks with separate contexts, and no
+task sees another's notes. That is what keeps each reading task small, and it is also why the notes for one paper
+can read as a set of disconnected observations: a method described in section 2 and the result it produced in
+section 4 are never held in one head. The per-paper write-up assembles a document from the section summaries, but it
+does not revisit the notes themselves.
+
+**Quick version:** after a paper's sections are all read, one task that sees only that paper's notes and may edit
+them — merge duplicates, attach a result to the method that produced it, mark which notes supersede others, and drop
+what turned out to be an artifact of reading a section in isolation. The verbatim quote stays attached to whatever
+survives; a merged note keeps both quotes or it is not a merge.
+
+**Measure:** run it on papers already read and compare before and after on the questions the notes exist to answer —
+can you state the method, the numbers and the limits from the notes alone, without opening the paper. The
+reproduction card in P-9 is the natural test of that.
+
+**Open question:** whether it is better to edit the notes or to add a second layer above them. Editing keeps one
+store and risks losing evidence; a layer keeps the raw notes intact and costs another thing to search. P-1's
+consolidation experiment is the same question at the level of a whole job.
+
+**Status: proposed, not started.**
+
 ## 2026-09-17 — Source selection reworked: the model judges, the coordinator verifies
 - **Question:** the final test lost 9 of 12 seeds to papers that couldn't be fetched, and picked what to read by citation counts alone. Can source discovery be split so the model only judges relevance and the coordinator owns everything mechanical?
 - **Design (the user's, implemented this session):** search → show the model a numbered list (title, authors, year, venue, citation count, abstract; no URLs) → it replies with numbers → the coordinator fetches each one to prove it exists, drops what it can't reach, dedupes, and shows a fresh list until the round's quota is filled → read → build the next round from the reference lists of what was read, minus everything seen → repeat until nothing novel appears or the round limit is hit.

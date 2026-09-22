@@ -34,6 +34,7 @@ class ToolResult:
     ok: bool = True
     end_turn: bool = False          # stop the agent loop and wait for the user
     denied: bool = False            # the user or the policy refused; later calls in the same message are skipped
+    repeats: int = 0                # how many times this identical output has come back (the repeat guard sets it)
 
 
 @dataclass

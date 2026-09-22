@@ -52,6 +52,11 @@ class Settings:
     min_p: float = 0.0
     presence_penalty: float = 0.0
     repetition_penalty: float = 1.0
+    # Debugging mode. Off is the system's normal state and carries no bounds of its own, because the bounds a real
+    # task needs are not known before it runs. Turning it on applies the limits below, which exist to make a fault
+    # show itself during investigation and are not a way to run work.
+    debug_mode: bool = False
+    debug_stop_after_repeats: int = 3        # only applies while debug_mode is on
     max_steps: int = 0                       # 0 = no limit; a run ends when the work does or the budget does
     max_consecutive_failures: int = 0        # 0 = never abandon a task over repeated tool errors
     tool_timeout_s: int = 0                  # 0 = a tool runs until it finishes

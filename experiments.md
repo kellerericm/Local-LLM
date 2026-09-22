@@ -224,9 +224,17 @@ survives; a merged note keeps both quotes or it is not a merge.
 can you state the method, the numbers and the limits from the notes alone, without opening the paper. The
 reproduction card in P-9 is the natural test of that.
 
-**Open question:** whether it is better to edit the notes or to add a second layer above them. Editing keeps one
-store and risks losing evidence; a layer keeps the raw notes intact and costs another thing to search. P-1's
-consolidation experiment is the same question at the level of a whole job.
+**Settled (the user, 2026-09-22): it edits, and the safety copy is a debugging artifact.** The pass works on the
+original notes. While debugging or diagnosing, a copy of the unaltered notes is kept first so the two can be
+compared; in production no copy is made, or it is dropped after. That keeps one store to search rather than two
+layers, and puts the cost of keeping evidence where it belongs — on the periods when someone is actually looking.
+The notes live in SQLite rather than files, so "a copy" means a snapshot of the job's notes taken when debug_mode
+is on.
+
+**And it is a narrow pass, not a rewrite.** What it may do: cross-reference the sections of one paper for relevance
+and repetition, and add the joins — this result came from that method, this note repeats that one, these two belong
+together. What it may not do: restate a note in its own words, or replace the verbatim quote that makes a note
+evidence rather than an assertion. Edits, not re-writes.
 
 **Status: proposed, not started.**
 

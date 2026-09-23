@@ -66,6 +66,26 @@ def test_malformed_call_gets_feedback_then_recovers(store, settings, workspace):
     assert "[coordinator]" in backend.calls[1]["messages"][-1]["content"]
 
 
+def test_calls_before_a_cut_off_one_still_run(store, settings, workspace):
+    """A long batch that runs out of output tokens mid-call used to lose the whole batch. The calls that
+    parsed are work the model finished: they run, and it is told only the tail is missing."""
+    chat = project_chat(store, workspace)
+    coord, backend, _ = make(store, settings, [
+        call("write_file", path="a.txt", content="one\n")
+        + call("write_file", path="b.txt", content="two\n")
+        + chr(60) + 'tool_call>{"name": "write_file", "arguments": {"path": "c.t',   # output stopped here
+        "Sent the rest.",
+    ])
+    coord.run(chat, "write the files")
+    assert (workspace / "a.txt").read_text() == "one\n"
+    assert (workspace / "b.txt").read_text() == "two\n"
+    results = [m for m in store.list_messages(chat) if m["role"] == "tool"]
+    assert len(results) == 2 and all(m["ok"] for m in results)
+    note = [m for m in store.list_messages(chat) if m["kind"] == "coordinator"][-1]
+    assert "could not be understood" in note["content"]
+    assert "The 2 call(s) before it did run" in note["content"]
+
+
 def test_invalid_args_and_unknown_tool_are_reported(store, settings, workspace):
     chat = project_chat(store, workspace)
     coord, _, _ = make(store, settings, [call("read_file"), call("teleport", where="moon"), "ok"])

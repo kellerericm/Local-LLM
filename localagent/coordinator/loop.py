@@ -139,11 +139,8 @@ class Coordinator:
                           tool_calls=calls or None, usage=usage)
                 pos += 1
 
-                if parsed.errors:
+                if parsed.errors and not calls:
                     failures += 1
-                    for c in calls:     # every call needs a result, even the ones we skip
-                        self._add(conv, "tool", "Not run: another tool call in the same message was malformed.",
-                                  tool_call_id=c["id"], name=c["name"], ok=False)
                     self._add(conv, "user", prompts.parse_error_note(
                         parsed.errors, FORMAT_REMINDER.get(parsed.format, "")), kind="coordinator")
                     if settings.max_consecutive_failures and failures >= settings.max_consecutive_failures:
@@ -199,6 +196,16 @@ class Coordinator:
                             self._add(conv, "tool", f"Not run: an earlier tool call in this message {why}. "
                                       "Re-plan based on that result.", tool_call_id=c["id"], name=c["name"], ok=False)
                         break
+                if parsed.errors:
+                    # Some calls in this message parsed and have just run; something after them did
+                    # not, most often because the output ended mid-call. What finished is kept --
+                    # discarding it would throw away work the model actually did -- and the model is
+                    # told which part is missing so that it sends only that.
+                    tail = (f"The {len(calls)} call(s) before it did run, and their results are above. "
+                            "Send only the ones that are missing; do not repeat the ones that worked.")
+                    self._add(conv, "user", prompts.parse_error_note(
+                        parsed.errors, FORMAT_REMINDER.get(parsed.format, "")) + "\n\n" + tail,
+                        kind="coordinator")
                 # Count failing messages, not calls: three bad calls batched in one message are one mistake
                 # (dry run 8 ended a section attempt that way).
                 if oks:

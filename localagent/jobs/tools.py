@@ -111,9 +111,6 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
             hint += (" You already sent this exact quote and it was rejected; resending it won't work. Copy a phrase "
                      "character for character from the closest passage above, or skip this note.")
         tried.append(quote.strip())
-        if len(tried) >= 3:
-            hint += (f" ({len(tried)} quotes rejected in this task so far. Notes are optional extras: if you've saved "
-                     "a few already, skip this claim and finish the task.)")
         # A rejected quote is the check working, not a tool malfunction: ok=True so it doesn't count toward the
         # consecutive-failure stop (dry run 7 threw away finished parts that way).
         return ToolResult("Note NOT saved: the quote doesn't appear word for word in the source. Copy the exact words "

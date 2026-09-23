@@ -171,6 +171,13 @@ class TaskSession(JobSession):
             available = {t.name: t for t in registry.available(ctx)}
             return ([available[n] for n in READ_ONLY_TOOLS if n in available]
                     + [KEEP_SOURCES, UPDATE_CHECKLIST, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER])
+        if params.get("part_file"):
+            # The section is in the prompt, whole and permanent. Reading tools would only let the task fetch what it
+            # already has, which is the loop this replaces: every fetch re-enters the history, and the history is
+            # what gets shortened when the window fills.
+            available = {t.name: t for t in registry.available(ctx)}
+            return ([available[n] for n in ("write_file",) if n in available]
+                    + [ADD_NOTE, UPDATE_CHECKLIST, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER])
         base = [t for t in registry.available(ctx) if t.name not in ("update_tasks", "ask_user")]
         extra = [RECORD_REFERENCES] if params.get("paper") else []
         return base + [UPDATE_CHECKLIST, UPDATE_CONTEXT, ADD_NOTE, SEARCH_NOTES, CHECK_CITATIONS, *extra, COMPLETE_TASK, FAIL_TASK,

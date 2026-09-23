@@ -49,7 +49,11 @@ is about section {k} alone.
 
 2. Write {summary} once: for each heading that appears in this section, '### <heading>' and a summary of what it says.
 
-3. Then take notes on this section with add_note, one call per point worth keeping. Write them for the person who
+3. Then take notes on this section, and take them all in one message: work out every point worth keeping first,
+   then send all of the add_note calls together. This matters mechanically. Each message you send is a step, and
+   between steps the conversation is refitted to the context window, where this section's text is the largest thing
+   and so the first to be shortened. Notes sent one at a time are notes written while the source is disappearing
+   behind you; notes sent together are all written while you can still see it. Write them for the person who
    comes after you: someone who wants to build on this work or fold its findings into their own, and who will never
    read the paper itself. That person needs what was done and how — the method, the data and where it came from, the
    settings and quantities, what was measured and against what baseline, the numbers with whatever error the authors

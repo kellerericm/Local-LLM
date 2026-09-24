@@ -101,3 +101,19 @@ def test_settings_and_chat_override_api(settings):
                 break
             time.sleep(0.05)
         assert data["messages"][-1]["usage"]["completion_tokens"] > 0
+
+
+def test_budgets_derive_from_shares_when_settings_are_loaded(tmp_path):
+    """max_new_tokens used to be read verbatim from settings.json, so raising output_share_pct changed nothing
+    until the file happened to be saved through the UI."""
+    import json
+
+    from localagent.config import load_settings
+
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "context_tokens": 20000, "reading_share_pct": 50, "reasoning_share_pct": 10, "output_share_pct": 40,
+        "max_new_tokens": 4200, "thinking_budget": 200,      # stale values from an older share split
+    }), encoding="utf-8")
+    s = load_settings(tmp_path)
+    assert s.max_new_tokens == 10000, s.max_new_tokens
+    assert s.thinking_budget == 2000, s.thinking_budget

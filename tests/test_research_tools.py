@@ -84,6 +84,27 @@ def test_find_quote_tolerates_pdf_hyphenation():
     assert near is not None and "strengthens synapses" in near
 
 
+def test_the_same_quote_is_not_saved_twice(env_factory, workspace):
+    """A task that loses its place re-derives its notes and sends ones it already has. It cannot see what it
+    saved, so the tool tells it. Chunk p1_1_1 sent 237 add_note calls for 58 distinct quotes without this."""
+    (workspace / "survey.md").write_text("Retrieval-augmented models store memories outside the network weights.")
+    env = env_factory([
+        call("add_note", claim="RAG keeps memory external", quote="store memories outside the network weights",
+             source="survey.md"),
+        call("add_note", claim="Said again, worded differently",
+             quote="Store Memories  Outside The Network Weights", source="survey.md"),
+        call("fail_task", reason="test done"),
+    ])
+    job = env.job()
+    env.plan(job["id"], plan=GOOD_PLAN[:1])
+    env.runner._tick()
+    notes = env.jobs.list_notes(job["id"])
+    assert len(notes) == 1, [n["claim"] for n in notes]
+    run = env.jobs.list_runs(job["id"])[-1]
+    results = [m["content"] for m in env.jobs.list_run_messages(run["id"]) if m["role"] == "tool"]
+    assert any("Already recorded as [n" in r for r in results), results
+
+
 def test_add_note_verifies_quotes_and_search_finds_them(env_factory, workspace):
     (workspace / "papers").mkdir()
     make_pdf(workspace / "papers" / "replay.pdf", ["Hippocampal replay during sleep supports memory consolidation."])

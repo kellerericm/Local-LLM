@@ -44,7 +44,10 @@ class Settings:
     # part for nine hours without finishing it.
     reading_share_pct: int = 50
     reasoning_share_pct: int = 10
-    output_share_pct: int = 20
+    # A reading task is asked for all of its notes in one message, so the output share has to hold them. At 20 a
+    # 25k-character section truncated mid-call every time (3 batches, all stopping at the same 4,200 tokens), and
+    # the task restarted its whole pass after each one, producing 65% duplicates and never finishing.
+    output_share_pct: int = 40
     max_new_tokens: int = 4096
     temperature: float = 0.6
     top_p: float = 0.95
@@ -126,7 +129,10 @@ def load_settings(data_dir: Path | None = None) -> Settings:
     data_dir = Path(data_dir or DEFAULT_DATA_DIR)
     path = settings_file(data_dir)
     if path.exists():
-        s = Settings.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        # Derive on load, not only on save: the shares are the source of truth, and a settings.json written
+        # before they changed otherwise keeps its old max_new_tokens for good. Raising output_share_pct had no
+        # effect at all until this ran here.
+        s = Settings.from_dict(json.loads(path.read_text(encoding="utf-8"))).with_budgets()
     else:
         s = Settings()
     s.data_dir = str(data_dir)

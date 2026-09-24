@@ -88,6 +88,18 @@ def _source_name(ctx: ToolContext, path) -> str:
         return str(path)
 
 
+def _note_with_same_quote(conv, source_name: str, quote: str) -> dict | None:
+    """The note already held for this quote, if there is one. Compared after the same folding the verbatim check
+    uses, so a quote retyped with plain ligatures matches the one saved with them."""
+    from .documents import normalize_quote
+
+    q = normalize_quote(quote)
+    for n in conv.jobs.list_notes(conv.job["id"], source_name):
+        if normalize_quote(n["quote"]) == q:
+            return n
+    return None
+
+
 def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: str = "",
              tags: list[str] | None = None) -> ToolResult:
     from ..tools.documents_tool import doc_cache
@@ -124,6 +136,13 @@ def add_note(ctx: ToolContext, claim: str, quote: str, source: str, location: st
         # A part is a verbatim slice of the paper: record the note against the paper so later steps find it by source.
         location = f"part {params.get('part')}" + (f", {location.strip()}" if location.strip() else "")
         source_name = params["paper_source"]
+    already = _note_with_same_quote(conv, source_name, quote)
+    if already:
+        # A task that loses its place -- an output cut off mid-batch, a retry -- re-derives its notes from the top
+        # and sends the ones it already has. It cannot see what it saved; this is how it finds out. (Chunk p1_1_1
+        # sent 237 add_note calls for 58 distinct quotes without ever being told.)
+        return ToolResult(f"Already recorded as [n{already['id']}]: \"{already['claim'][:160]}\". This exact quote "
+                          "is saved, so there is nothing to do for it. Move to a point you have not noted yet.")
     note = conv.jobs.add_note(conv.job["id"], source_name, claim.strip(), quote.strip(), location.strip(),
                               tags, task_key)
     conv.runner._changed(conv.job["id"])

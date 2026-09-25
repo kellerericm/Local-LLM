@@ -17,7 +17,12 @@ DEFAULT_DATA_DIR = Path(os.environ.get("LOCALAGENT_DATA_DIR", r"D:\LocalAgent\da
 @dataclass
 class ResourceSettings:
     max_vram_gb: float = 14.0            # passed to from_pretrained(max_memory=...)
-    offload: str = "auto"                # auto: overflow to system RAM | gpu_only: everything on the GPU or fail
+    # gpu_only: everything on the GPU, or refuse to load. auto silently relocates whatever does not fit into
+    # system RAM, where it stays for the life of the worker and runs about ten times slower -- three days of
+    # unexplained slowness looked like a bug in the agent rather than a placement decision made at load.
+    # An error at startup is worth more than a run that finishes eventually. Under gpu_only max_vram_gb is
+    # not consulted: device_map is pinned to GPU 0 and the card's real capacity is the limit.
+    offload: str = "gpu_only"            # gpu_only: everything on the GPU or fail | auto: overflow to system RAM
     max_cpu_ram_gb: float = 12.0         # how much system RAM offloaded layers may use
     cpu_threads: int = 8                 # torch threads in the model worker
     idle_unload_minutes: float = 15.0    # 0 disables idle unload

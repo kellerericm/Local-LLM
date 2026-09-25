@@ -101,6 +101,22 @@ class TransformersBackend:
         return hasattr(config, "vision_config") or any(
             "ConditionalGeneration" in a for a in (getattr(config, "architectures", None) or []))
 
+    def release_cache(self) -> None:
+        """Give the KV cache's blocks back to the driver after a generation.
+
+        Torch's allocator keeps freed blocks in its own pool. That is the right default when every request is the
+        same shape, but a task's prompts here range from 6k to 28k tokens, so the pool grows to fit the largest of
+        them and fragments. Once it fills the card, Windows starts paging VRAM into system RAM: generation keeps
+        working and gets about ten times slower, which is what turned 13.5 tok/s into 2.0 over three days without
+        anything appearing to be wrong."""
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def count_tokens(self, text: str) -> int:
         return len(self.tokenizer(text, add_special_tokens=False)["input_ids"])
 

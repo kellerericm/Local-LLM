@@ -51,6 +51,12 @@ def worker_main(spec: dict, requests, responses, pause_ev, cancel_ev) -> None:
                 responses.put({"type": "done", "id": req["id"], "cancelled": cancel_ev.is_set()})
             except BaseException:
                 responses.put({"type": "error", "id": req["id"], "error": traceback.format_exc()})
+            finally:
+                # Also after a failure or a cancel: an abandoned generation's cache is exactly the kind that
+                # otherwise sits in the pool until the card is full.
+                release = getattr(backend, "release_cache", None)
+                if release:
+                    release()
         elif op == "count_tokens":
             responses.put({"type": "count", "id": req["id"], "value": backend.count_tokens(req["text"])})
 

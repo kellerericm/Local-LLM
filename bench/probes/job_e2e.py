@@ -99,7 +99,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workload", choices=sorted(WORKLOADS), default="tune_me")
     ap.add_argument("--port", type=int, default=8812)
-    ap.add_argument("--minutes", type=float, default=90)
+    ap.add_argument("--minutes", default="90", help='how long the harness watches the job; "none" or "all" to watch '
+                                                   'until the job ends')
     ap.add_argument("--budget-hours", type=float, default=1.5)
     ap.add_argument("--budget-steps", type=int, default=1000)
     ap.add_argument("--indefinite", action="store_true")
@@ -137,7 +138,8 @@ def main():
     server_log = run_dir / "server.log"
     base = f"http://127.0.0.1:{args.port}"
     c = httpx.Client(base_url=base, timeout=30)
-    deadline = time.time() + args.minutes * 60
+    deadline = (float("inf") if args.minutes.strip().lower() in ("none", "all")
+                else time.time() + float(args.minutes) * 60)
     result = {"run_dir": str(run_dir), "events": []}
 
     def note(event: str, **kw):

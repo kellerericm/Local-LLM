@@ -271,6 +271,14 @@ class JobStore:
             self.s._conn.commit()
         return self.list_tasks(job_id)
 
+    def delete_tasks(self, job_id: str, keys: list[str]) -> int:
+        """Remove tasks from a plan, for replacing a stretch of it (their runs stay in the history)."""
+        with self.s._lock:
+            n = sum(self.s._conn.execute("DELETE FROM job_tasks WHERE job_id=? AND key=?", (job_id, k)).rowcount
+                    for k in keys)
+            self.s._conn.commit()
+        return n
+
     def list_tasks(self, job_id: str) -> list[dict]:
         return [self._task_out(r) for r in
                 self.s._all("SELECT * FROM job_tasks WHERE job_id=? ORDER BY position", (job_id,))]
@@ -378,6 +386,10 @@ class JobStore:
 
     def delete_note(self, job_id: str, note_id: int) -> bool:
         return self.s._exec("DELETE FROM notes WHERE job_id=? AND id=?", (job_id, note_id)).rowcount > 0
+
+    def delete_notes_of_task(self, job_id: str, task_key: str) -> int:
+        """Every note a task saved, in any of its runs: cleared when the task starts over on its material."""
+        return self.s._exec("DELETE FROM notes WHERE job_id=? AND task_key=?", (job_id, task_key)).rowcount
 
     # -- papers (deep research) ----------------------------------------------------------
     @staticmethod

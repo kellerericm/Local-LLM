@@ -115,9 +115,20 @@ class JobSession(Conversation):
 
 
     def scratchpad(self, ctx, current: dict | None = None) -> str:
-        """Rebuilt from the database for every model step, so updates show up immediately."""
-        return render_block(self.jobs.list_tasks(self.job["id"]), self.jobs.list_context(self.job["id"]),
-                            prompts.workspace_listing(ctx.workspace), current)
+        """Rebuilt from the database for every model step, so updates show up immediately.
+
+        Planning sees the whole plan. A task sees what it needs: its own instructions and checklist, and the results
+        of the tasks it depends on, never the rest of the job. The plan grows with every paper a round keeps: at 281
+        tasks it was 11.5k tokens, which filled the 20k window before a task had said anything. Each turn pushed out
+        the one before it: a reading task restarted its notes from the top for four days (p1_1_1), and a write-up
+        lost the summary it had just read and asked for it twenty times (w1_1)."""
+        tasks = self.jobs.list_tasks(self.job["id"])
+        if current is None:
+            return render_block(tasks, self.jobs.list_context(self.job["id"]), prompts.workspace_listing(ctx.workspace))
+        by_key = {t["key"]: t for t in tasks}
+        builds_on = [by_key[k] for k in current.get("depends_on") or [] if k in by_key]
+        return render_block(None, self.jobs.list_context(self.job["id"]), prompts.workspace_listing(ctx.workspace),
+                            current, builds_on=builds_on)
 
 
 class PlanSession(JobSession):
@@ -171,13 +182,14 @@ class TaskSession(JobSession):
             available = {t.name: t for t in registry.available(ctx)}
             return ([available[n] for n in READ_ONLY_TOOLS if n in available]
                     + [KEEP_SOURCES, UPDATE_CHECKLIST, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER])
-        if params.get("part_file"):
-            # The section is in the prompt, whole and permanent. Reading tools would only let the task fetch what it
-            # already has, which is the loop this replaces: every fetch re-enters the history, and the history is
-            # what gets shortened when the window fills.
+        if params.get("material"):
+            # The model interprets a text it is handed: the text is in the prompt, whole, and the task names the
+            # tools its output needs. Reading tools would only let it fetch what it already has, which is the loop
+            # this replaces: every fetch re-enters the history, and the history is what the window shortens.
             available = {t.name: t for t in registry.available(ctx)}
-            return ([available[n] for n in ("write_file",) if n in available]
-                    + [ADD_NOTE, UPDATE_CHECKLIST, COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER])
+            job_tools = {t.name: t for t in (ADD_NOTE, RECORD_REFERENCES, UPDATE_CHECKLIST)}
+            chosen = [available.get(n) or job_tools.get(n) for n in params.get("tools") or []]
+            return [t for t in chosen if t] + [COMPLETE_TASK, FAIL_TASK, JOB_ASK_USER]
         base = [t for t in registry.available(ctx) if t.name not in ("update_tasks", "ask_user")]
         extra = [RECORD_REFERENCES] if params.get("paper") else []
         return base + [UPDATE_CHECKLIST, UPDATE_CONTEXT, ADD_NOTE, SEARCH_NOTES, CHECK_CITATIONS, *extra, COMPLETE_TASK, FAIL_TASK,

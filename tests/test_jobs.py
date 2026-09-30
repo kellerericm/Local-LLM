@@ -224,7 +224,28 @@ def test_full_job_to_done(env_factory, workspace):
     names = {t["function"]["name"] for t in env.backend.calls[0]["tools"]}
     assert {"complete_task", "fail_task", "ask_user", "write_file"} <= names and "update_tasks" not in names
     system = env.backend.calls[2]["messages"][0]["content"]
-    assert "YOUR TASK" in system and "Wrote data.txt." in system     # outline shows the earlier result
+    # t2 sees the result of t1, which it depends on, and not the job's task list
+    assert "### Results of the tasks this one builds on" in system and "[t1] " in system and "Wrote data.txt." in system
+    assert "### Task list" not in system
+
+
+def test_task_prompt_has_only_what_the_task_builds_on(env_factory, workspace):
+    # p1_1_1 and w1_1: a 281-task plan in every task's prompt filled the window before the task had said anything
+    env = env_factory([
+        call("write_file", path="data.txt", content="1\n2\n3\n"), call("complete_task", summary="Wrote data.txt."),
+        call("write_file", path="summary.md", content="It lists numbers."), call("complete_task", summary="Wrote summary."),
+    ])
+    job = env.job()
+    env.plan(job["id"])
+    env.runner._tick()
+    env.runner._tick()
+    first = env.backend.calls[0]["messages"][0]["content"]
+    assert "### Task list" not in first and "YOUR TASK" not in first
+    assert "## Your task: [t1]" in first and "(none: this task starts from the goal" in first
+    assert "### Your checklist for this task" in first
+    second = next(c["messages"][0]["content"] for c in env.backend.calls
+                  if "## Your task: [t2]" in c["messages"][0]["content"])
+    assert "### Task list" not in second and "[t1] " in second and "Wrote data.txt." in second
 
 
 def test_checks_failure_feeds_next_attempt(env_factory):

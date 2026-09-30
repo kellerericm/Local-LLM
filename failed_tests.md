@@ -3,6 +3,36 @@
 Record failures here: date, what was run, what happened (exact error), suspected cause, status (open / fixed / won't fix).
 A failure is information, not a verdict.
 
+## 2026-09-21 → 09-25 — deep_research round 1: the first reading task never finished (the job plan filled the window)
+- **Run:** `D:\LocalAgent\bench-runs\20260919-002111_job_e2e_empty_deep_research`, job literature-review-241d9c. Round 0 was finished (10 papers, every part passed); round 1 kept and fetched 44 papers. Task `p1_1_1` (Kirkpatrick et al., EWC, part 1/2) ran from 2026-09-21 08:02 and was resumed about 9 times over 4 days without finishing.
+- **What happened (run 6287c2d6a19d, 380 messages):** the model wrote the summary and sent note batches, but it never saw its own earlier turns. It rewrote summary-01.md 16 times, called add_note 303 times (notes n187–n378, mostly repeats of the same claims), hit the 4,200-token output ceiling on batch after batch, and called complete_task once.
+- **Cause:** the prompt was 20,587 tokens **at step 1**, against a 20,000 window, before any history existed. Measured with the Qwen tokenizer: the job task list (all 281 tasks) was 11,518 tokens; the section being read was 6,253; everything else was about 2,700. `TaskSession.system_prompt` puts the whole job plan in every task's prompt. In round 0 the plan was about 50 tasks and fit. Round 1 grew it to 281, so every turn pushed the previous turn out (`fit_messages` drops the oldest turns), and the task looped from the top.
+- **What this was not:** the model (the user has another local app on another PC that does this task fine), the quote verifier (docs/note_standard.md: 22/22), or the window size by itself. The earlier fixes for this task (output share, duplicate-quote replies, section handed in once) treated symptoms of this.
+- **Lesson (the user, 2026-09-25):** the task is feasible, and our deployment failed. Resuming the stuck task unchanged, adding logging, or watching it were substitutes for reading its transcript, which showed the cause at once.
+- **Fix (the user's choice, 2026-09-25):** reading tasks (those with a part_file) get no job task list (`TaskSession.scratchpad`). Other tasks keep it. Test: `test_reading_task_prompt_has_no_job_task_list`.
+- **Verified:** p1_1_1's first prompt dropped from 20,587 to 9,550 tokens. It finished at 09:02 after 4 days stuck, and p1_1_2 finished 6 minutes later.
+- **Then the same failure in the next kind of task:** write-up w1_1 still got the full list, so its first prompt was 16,572 tokens. Its first read of summary-01.md was pushed out of the window. The repeat guard then withheld every re-read ("Not shown: this read_file call returned exactly the same output…"), so the model concluded the file was empty and asked for it about 20 times in 7 minutes without writing anything. The guard is supposed to count only repeats that are still fully visible, but here it withheld output the model no longer had. Stopped at 09:15 to wait for the user's feedback.
+- **Fix, all tasks (2026-09-25):** no task session gets the job's task list any more. A task sees its instructions, its checklist, the context items, and the full results of the tasks it depends on (`render_builds_on`). Planning still sees the whole plan. Measured on the real job: the w1_1 system prompt went from ~15.5k to 2,572 tokens, and p1_1_1 from ~19.5k to 8,129.
+- **Fix, repeat guard:** `repeat_guard` now checks whether the earlier output is still intact in the prompt the model was actually sent (`conv.last_prompt`, set when the messages are fitted), instead of guessing from "within the last 8 messages". Tests: `test_task_prompt_has_only_what_the_task_builds_on`, `test_rereading_is_judged_by_what_the_prompt_still_holds`.
+- **Status:** fixed in code. On the job the prompts were as measured (w1_1 attempts started at ~8.3k tokens), and nothing was withheld wrongly.
+
+## 2026-09-25 — deep_research w1_1 (EWC write-up): reviewer rejected 4 attempts, then the 5th read in circles
+- **Run:** same job, after the fixes above; restarted at ~13:40, stopped at 14:59 to wait for the user's feedback.
+- **What happened:** attempts 1–4 each wrote a write-up in 4–8 minutes, and the reviewer rejected every one for the same kind of fault: a claim citing a note that says something else ("[n386] is about EWC using Fisher Information…, but the note is about SGD with dropout"). Attempt 5 went 110+ steps only reading (read_file ×91, search_notes ×52) and wrote nothing.
+- **Cause:** the EWC paper has **251 notes**; the other papers have 20–40. They are leftovers of the four-day p1_1_1 loop: 169 distinct quotes and 235 distinct claims, about 102k characters (~30k tokens). The write-up has to cite notes, and it can only see them through search_notes. All 251 can't be in a 20k window at once, so each fetch pushes out the previous one (now correctly not blocked by the repeat guard). Earlier attempts cited from notes that were no longer in view, hence the wrong citations.
+- **Two problems:** (1) this paper's notes are junk from our bug; (2) the write-up design needs every note of a paper in view at once, which will fail for any paper with a legitimately large set of notes (a long review).
+- **Fix (the user's design, confirmed 2026-09-25):** the model is a text interpreter. Each step is given one instruction and the text it applies to, in a fresh context, and is never told to go and fetch its material.
+  1. The paper is split into chunks that fit the window.
+  2. Each chunk gets its own step: summarise each section, end with what the section contributes, take verbatim notes. Its tools are write_file and add_note only.
+  3. The reference list, set aside at the split, is handed over as text (split further only if it doesn't fit). record_references now adds to the paper's list rather than replacing it.
+  4. Code assembles papers/<paper>.md: the section summaries in order, every note as a key claim citing its own id, and the value assessment.
+  5. The value step is handed the section summaries as text, in chunks if needed, each later chunk getting the assessment so far to revise.
+  6. A step handed its text clears the notes and checklist its earlier runs left before it starts.
+
+  The old single write-up task (search_notes over the whole paper) is gone. Tests: `test_each_step_is_handed_its_text_and_code_assembles_the_write_up`, `test_a_rerun_chunk_starts_without_the_notes_it_left_before`.
+- **Run rebuilt:** round 0 was left as done. Round 1's 180 old tasks and the 251 notes they saved were removed, and the 44 fetched papers were expanded again: 136 chunk steps, 1 reference-list step (the index had the other 43 lists). Backup: `data/localagent.before-round1-rebuild.sqlite3`.
+- **Status:** running.
+
 ## 2026-09-17 — The "can we download it?" host list was wrong in both directions
 - **Run:** live check of the seeding fix from 54068d7 (`ScholarClient.search(open_access=True)` plus `obtainable()`), on the real OpenAlex index.
 - **What happened:** `obtainable()` passed every result, but the copies didn't exist:

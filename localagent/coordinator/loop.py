@@ -24,7 +24,7 @@ from ..safety.paths import PathGuard
 from ..tools.registry import (ApprovalPending, Tool, ToolContext, ToolError, ToolRegistry, ToolResult,
                               validate_args)
 from . import prompts
-from .context import MIN_TOOL_CHARS, fit_messages
+from .context import fit_messages
 from .conversation import ChatConversation, Conversation
 
 log = logging.getLogger(__name__)
@@ -35,22 +35,25 @@ log = logging.getLogger(__name__)
 READ_ONLY_TOOLS = {"read_file", "list_dir", "glob", "grep", "read_document", "search_notes", "check_citations", "list_projects"}
 
 
-def repeat_guard(seen: dict[str, list[tuple[int, int]]], name: str, result: ToolResult, step: int,
-                 pos: int) -> ToolResult:
+def repeat_guard(seen: dict[str, list[int]], name: str, result: ToolResult, step: int,
+                 last_prompt: list[dict]) -> ToolResult:
     """Keyed on the output, not the arguments: the model varies limits and empty queries while looping. The first
     repeat is shown with a warning; later ones are withheld and count as failures, so a loop ends in needs_help.
-    Only repeats of output the model can still see count: context fitting may shorten older tool results when the
-    window demands it, and re-reading those is legitimate (dry run 8: a 7 KB outline was shortened, re-read, and
-    withheld)."""
+    Only a repeat of output the model can still see counts, and that is checked against the prompt it was actually
+    sent (last_prompt), not guessed. Context fitting shortens old tool results and drops old turns when the window
+    demands it, and re-reading what was taken away is legitimate. The guess this replaces ("within the last 8
+    messages") withheld a summary that a nearly full window had already dropped: the write-up w1_1 concluded the
+    file was empty and asked for it twenty times. An earlier read in this same message is visible too: it is in the
+    history the model sees next."""
     key = name + ":" + hashlib.sha1(result.content.encode("utf-8", "replace")).hexdigest()
     earlier = seen.setdefault(key, [])
-    # Short results are never shortened by context fitting, so a repeat of one is a real repeat.
-    fully_visible = len(result.content) <= MIN_TOOL_CHARS
-    earlier[:] = [(s, p) for s, p in earlier if fully_visible or pos - p <= 8]
-    earlier.append((step, pos))
+    visible = any(m.get("role") == "tool" and isinstance(m.get("content"), str) and result.content in m["content"]
+                  for m in last_prompt)
+    earlier[:] = [s for s in earlier if visible or s == step]
+    earlier.append(step)
     if len(earlier) == 1:
         return result
-    steps = ", ".join(str(s + 1) for s, _ in earlier[:-1])
+    steps = ", ".join(str(s + 1) for s in earlier[:-1])
     if len(earlier) == 2:
         return ToolResult(f"(This is exactly the same output you got at step {steps}; nothing has changed since. "
                           "Don't fetch it again: use it and move on.)\n" + result.content)
@@ -110,8 +113,7 @@ class Coordinator:
         self._status(conv, "running")
         failures = 0
         outcome = "done"
-        seen: dict[str, list[tuple[int, int]]] = {}   # read-only output -> (step, message position), since a change
-        pos = 0                              # messages added this run: how far back a tool result is
+        seen: dict[str, list[int]] = {}     # read-only output -> steps it came back at, since the last change
         looking = 0                          # steps in a row that only read or searched
         try:
             for step in range(max_steps):
@@ -137,7 +139,6 @@ class Coordinator:
                 calls = [{"id": f"call_{time.time_ns()}_{i}", **c} for i, c in enumerate(parsed.tool_calls)]
                 self._add(conv, "assistant", parsed.content, reasoning=parsed.reasoning or None,
                           tool_calls=calls or None, usage=usage)
-                pos += 1
 
                 if parsed.errors and not calls:
                     failures += 1
@@ -170,9 +171,8 @@ class Coordinator:
                                       name=c["name"], ok=False)
                         break
                     result = self._execute(ctx, by_name, call, settings)
-                    pos += 1
                     if call["name"] in READ_ONLY_TOOLS and result.ok:
-                        result = repeat_guard(seen, call["name"], result, step, pos)
+                        result = repeat_guard(seen, call["name"], result, step, getattr(conv, "last_prompt", []))
                         stop_at = (int(getattr(settings, "debug_stop_after_repeats", 0) or 0)
                                    if getattr(settings, "debug_mode", False) else 0)
                         if stop_at and result.repeats >= stop_at:
@@ -265,7 +265,9 @@ class Coordinator:
         system = {"role": "system", "content": conv.system_prompt(ctx)}
         history = to_model_messages(conv.messages())
         budget = ctx.settings.context_tokens - max_new_tokens
-        return fit_messages([system] + history, budget, tools)
+        fitted = fit_messages([system] + history, budget, tools)
+        conv.last_prompt = fitted        # what the model was actually shown: the repeat guard checks against it
+        return fitted
 
     def _generate(self, conv: Conversation, ctx: ToolContext, tools: list[Tool] | None,
                   cancel: threading.Event) -> tuple[str, dict | None]:

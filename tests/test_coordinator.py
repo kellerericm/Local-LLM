@@ -245,26 +245,33 @@ def test_repeated_identical_reads_are_warned_then_withheld(store, settings, work
     assert len(tools) == 9
 
 
-def test_rereading_a_long_output_after_it_was_shortened_is_allowed(store, settings, workspace):
-    # Dry run 8: a 7 KB outline read at step 1 was shortened by context fitting, re-read, and wrongly withheld.
-    chat = project_chat(store, workspace)
-    settings.max_steps = 20
+def test_rereading_is_judged_by_what_the_prompt_still_holds(store, settings, workspace):
+    # Dry run 8 and w1_1: output the window had already shortened or dropped was withheld as a "repeat", so the
+    # model concluded the file was empty and kept asking for it. Visibility is checked against the prompt sent.
     (workspace / "big.md").write_text("".join(f"line {i} of the outline with some words\n" for i in range(300)))
-    for i in range(5):
-        (workspace / f"small{i}.txt").write_text(f"tiny {i}")
-    coord, backend, _ = make(store, settings, [
-        call("read_file", path="big.md", limit=400),
-        *[call("read_file", path=f"small{i}.txt") for i in range(5)],                    # other work in between
-        call("list_dir", path="."),
-        call("read_file", path="big.md", limit=400),       # long ago now: legitimately re-read
-        call("read_file", path="big.md", limit=400),       # immediately again: still visible, so warned
-        "done",
-    ])
+    (workspace / "other.md").write_text("".join(f"other {i} filler text that takes room\n" for i in range(300)))
+    script = [call("read_file", path="big.md", limit=400), call("read_file", path="other.md", limit=400),
+              call("read_file", path="big.md", limit=400), call("read_file", path="big.md", limit=400), "done"]
+    settings.max_steps = 20
+    settings.max_new_tokens = 500
+
+    settings.context_tokens = 12000                   # the first read is shortened to fit the second
+    chat = project_chat(store, workspace)
+    coord, backend, _ = make(store, settings, list(script))
     assert coord.run(chat, "read things") == "done"
-    tools = [m for m in store.list_messages(chat) if m["role"] == "tool"]
-    big = [m for m in tools if "line 0 of the outline" in m["content"] or "Not shown" in m["content"]]
-    assert big[1]["ok"] and not big[1]["content"].startswith("(This is exactly")
-    assert big[2]["content"].startswith("(This is exactly the same output")
+    big = [m for m in store.list_messages(chat) if m["role"] == "tool" and "big.md" in m["content"]]
+    shown = backend.calls[2]["messages"]              # what the model had in front of it when it re-read
+    assert not any(m["role"] == "tool" and "line 150 of the outline" in m["content"] for m in shown)
+    assert big[1]["ok"] and "line 150 of the outline" in big[1]["content"]
+    assert "(This is exactly" not in big[1]["content"] and "Not shown" not in big[1]["content"]
+
+    settings.context_tokens = 40000                   # everything fits: a re-read is a real repeat
+    chat = project_chat(store, workspace)
+    coord, backend, _ = make(store, settings, list(script))
+    assert coord.run(chat, "read things") == "done"
+    big = [m for m in store.list_messages(chat) if m["role"] == "tool" and ("big.md" in m["content"] or "Not shown" in m["content"])]
+    assert big[1]["content"].startswith("(This is exactly the same output")
+    assert big[2]["content"].startswith("Not shown") and not big[2]["ok"]
 
 
 def test_failures_count_per_message_not_per_call(store, settings, workspace):

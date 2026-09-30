@@ -50,6 +50,8 @@ responsibility and nothing in them is missing from your work.
 Do two things with it, in this order.
 
 1. Write {summary}: for each heading that appears above, '### <heading>' followed by a summary of what it says.
+   End it with '### What this section contributes': what it adds to answering the research question, how strong
+   its evidence is, and what it leaves out or admits it could not do.
 
 2. Take your notes, all of them in one message. Work out every point worth keeping first, then send every add_note
    call together. Each note takes source "{part}", the heading it came from as the location, and a quote copied
@@ -65,25 +67,63 @@ Do two things with it, in this order.
 
 Then call complete_task. The research question this serves, for judging what matters: {question}"""
 
-ASSEMBLE = """Assemble the write-up of "{title}". Steps, each done once:
-1. Read the part summaries: {summaries}.
-2. Call search_notes with source "{source}", brief true, and a limit high enough to list every note saved from
-   this paper (pass the total if you know it; page with offset if the result says there are more).
-3. Write {md} containing:
-- '# {title}'
-- '## Section summaries': the part summaries in order, lightly edited into one flow
-- '## Key claims': a bullet for each of the paper's claims that bears on the research question, each citing a
-  note from step 2 like [n12]
-- '## Value of this paper': its contribution, methods, strength of evidence, limitations, and how it bears on the
-  research question: {question}
-4. {references}
-5. Call check_citations on {md} once and fix any ids it lists. Then call complete_task; its other checks run
-   automatically, so you don't need to verify them yourself. If {md} already exists from an earlier attempt, read it once, fix what's missing, and go to step 5."""
+# The write-up is built the way the paper is read: the model is handed a text and told what to do with it, one
+# chunk per task, each in a fresh context. It is never asked to go and fetch its material. The single write-up task
+# this replaces was: it had to pull every note of the paper through search_notes, and a paper with more notes than the window
+# holds (EWC, 251) sent it round in circles citing notes it could no longer see.
+REFS_CHUNK = """Below is {span} of the reference list of "{title}". It is the whole of your material.
 
-REFS_FROM_FILE = ("Read {refs} and call record_references with its entries (title, first author, year, and DOI or "
-                  "arXiv id when shown).")
-REFS_NONE_FOUND = "No reference list was found in the text; call record_references with an empty list."
-REFS_KNOWN = "The reference list is already known from the scholarly index; skip this step."
+--- REFERENCES BEGIN ---
+{text}
+--- REFERENCES END ---
+
+Call record_references once, with every entry above: title, first author, year, and DOI or arXiv id when shown.
+What you record is added to what other chunks of the list recorded. Then call complete_task."""
+
+VALUE = """Below are the section summaries of the paper "{title}" ({span} of them). Each ends with what that section
+contributes. They are the whole of your material: there is nothing to open or fetch.
+{draft}
+--- SUMMARIES BEGIN ---
+{text}
+--- SUMMARIES END ---
+
+Write {path}, starting with '## Value of this paper', then the paper's contribution, its methods, how strong its
+evidence is, its limitations, and how it bears on the research question: {question}
+{revise}Then call complete_task."""
+
+VALUE_DRAFT = """
+Your assessment from the earlier summaries of this paper (the file already holds it):
+
+--- ASSESSMENT SO FAR BEGINS ---
+{draft}
+--- ASSESSMENT SO FAR ENDS ---
+"""
+VALUE_REVISE = ("Revise the assessment so far in the light of these summaries and write the whole of it back, "
+                "keeping what still holds. ")
+
+
+def chunks_of(text: str, room: int) -> list[str]:
+    """Consecutive pieces of text, each within room characters, cut at line breaks where there is one to cut at.
+    Every character lands in a piece."""
+    pieces, buf = [], ""
+    for line in text.splitlines(keepends=True):
+        while len(line) > room:                          # one line longer than the room: cut it
+            if buf:
+                pieces.append(buf)
+                buf = ""
+            pieces.append(line[:room])
+            line = line[room:]
+        if buf and len(buf) + len(line) > room:
+            pieces.append(buf)
+            buf = ""
+        buf += line
+    if buf.strip():
+        pieces.append(buf)
+    return pieces
+
+
+def span_of(j: int, n: int) -> str:
+    return "all" if n == 1 else f"part {j} of {n}"
 
 # How much material fits in one prompt, worked out from the context window in Settings rather than chosen here.
 # Half the window carries material; the rest is the task's own words and the answer it writes.
@@ -792,6 +832,9 @@ def prepare_parts(runner, job, p: dict) -> int:
 
 
 def expand_paper(runner, job, acquire_task: dict) -> None:
+    """A paper becomes a chain of tasks, each handed its text: one per part (read it, summarise it, take notes), one
+    per chunk of the reference list, then (added as the parts finish) the value assessment over the part summaries
+    and a code step that assembles the write-up."""
     ws = workspace_of(runner, job)
     p = runner.jobs.get_paper(job["id"], acquire_task["params"]["paper"])
     prov = p.get("provenance") or {}
@@ -800,15 +843,14 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
     r, i = acquire_task["params"]["round"], acquire_task["params"]["index"]
     folder, n = prov["folder"], prov["parts"]
     group = acquire_task["parent_key"]
-    tasks, part_keys, summaries = [], [], []
+    chain = {"paper": p["key"], "round": r, "index": i, "group": group}
+    tasks = []
     for k in range(1, n + 1):
-        key = f"p{r}_{i}_{k}"
         part, summary = f"{folder}/part-{k:02d}.md", f"{folder}/summary-{k:02d}.md"
-        part_keys.append(key)
-        summaries.append(summary)
-        tasks.append({"key": key, "parent_key": group, "title": f"Read part {k}/{n}: {p['title'][:60]}",
+        tasks.append({"key": f"p{r}_{i}_{k}", "parent_key": group, "title": f"Read part {k}/{n}: {p['title'][:60]}",
                       "depends_on": [acquire_task["key"]],
-                      "params": {"paper": p["key"], "part": k, "part_file": part, "paper_source": p["file_path"]},
+                      "params": {**chain, "part": k, "part_file": part, "paper_source": p["file_path"],
+                                 "material": True, "tools": ["write_file", "add_note"]},
                       "instructions": PART.format(part=part, k=k, n=n, title=p["title"],
                                                   others=("section" if n == 2 else f"{n - 1} sections"),
                                                   text=(ws / part).read_text(encoding="utf-8", errors="replace"),
@@ -816,26 +858,110 @@ def expand_paper(runner, job, acquire_task: dict) -> None:
                       "done_when": f"{summary} exists with section summaries",
                       # "## " also matches "### ": accept either heading level (run 6 failed 3 times on "## Abstract")
                       "checks": [{"type": "file_contains", "path": summary, "text": "## "}]})
-    md = paper_md(p["key"])
     if p["meta_references"]:
-        refs = REFS_KNOWN
+        pass                                             # the scholarly index already has the list
     elif prov.get("references_file"):
-        refs = REFS_FROM_FILE.format(refs=f"{folder}/references.txt")
+        text = (ws / folder / "references.txt").read_text(encoding="utf-8", errors="replace")
+        room = room_for_material(runner, REFS_CHUNK.format(span="part 99 of 99", title=p["title"], text=""),
+                                 scratchpad=job.get("goal") or "")
+        pieces = chunks_of(text, room)
+        for j, piece in enumerate(pieces, 1):
+            tasks.append({"key": f"rf{r}_{i}_{j}", "parent_key": group,
+                          "title": f"References {j}/{len(pieces)}: {p['title'][:60]}",
+                          "depends_on": [acquire_task["key"]],
+                          "params": {**chain, "refs": j, "material": True, "tools": ["record_references"]},
+                          "instructions": REFS_CHUNK.format(span=span_of(j, len(pieces)), title=p["title"], text=piece),
+                          "done_when": "this chunk's references recorded",
+                          "checks": [{"type": "references_recorded", "paper": p["key"]}]})
     else:
-        refs = REFS_NONE_FOUND
-    tasks.append({"key": f"w{r}_{i}", "parent_key": group, "title": f"Write-up and value: {p['title'][:60]}",
-                  "depends_on": part_keys, "review": True, "params": {"paper": p["key"], "assemble": True},
-                  # Reviewed writing converges slowly, and a failed write-up costs the paper's reference list, which
-                  # is what the next round is built from (user's call, 2026-09-18).
-                  "max_attempts": REVIEWED_ATTEMPTS,
-                  "instructions": ASSEMBLE.format(title=p["title"], summaries=", ".join(summaries), source=p["file_path"],
-                                                  md=md, question=job["goal"], references=refs),
-                  "done_when": f"{md} has section summaries, key claims citing notes, and a value assessment; "
-                               "references known",
-                  "checks": [{"type": "file_contains", "path": md, "text": "## Value of this paper"},
-                             {"type": "citations_valid", "path": md},
-                             {"type": "references_recorded", "paper": p["key"]}]})
+        runner.jobs.upsert_paper(job["id"], p["key"], provenance={**prov, "references_recorded": True})
+        runner.jobs.journal(job["id"], "acquire", f"No reference list was found in \"{p['title']}\".",
+                            acquire_task["key"])
     runner.jobs.append_tasks(job["id"], tasks)
+
+
+def chain_of(params: dict) -> dict:
+    """Which paper a task belongs to, and nothing else: a new task in the chain must not inherit what kind of task
+    the one before it was."""
+    return {k: params[k] for k in ("paper", "round", "index", "group")}
+
+
+def value_pieces(runner, job, p: dict) -> list[str]:
+    """The part summaries of a paper, in order, cut into chunks that each fit one value task's prompt."""
+    ws = workspace_of(runner, job)
+    prov = p.get("provenance") or {}
+    folder = prov["folder"]
+    text = "\n\n".join(f"<!-- part {k} of {prov['parts']} -->\n"
+                       + (ws / folder / f"summary-{k:02d}.md").read_text(encoding="utf-8", errors="replace").strip()
+                       for k in range(1, prov["parts"] + 1) if (ws / folder / f"summary-{k:02d}.md").is_file())
+    carried = VALUE.format(title=p["title"], span="part 99 of 99", draft="", text="", path="x" * 60,
+                           question=job["goal"], revise=VALUE_REVISE)
+    # A later chunk also carries the assessment so far: leave it the room an assessment takes.
+    return chunks_of(text, max(2_000, room_for_material(runner, carried, scratchpad=job.get("goal") or "") - 6_000))
+
+
+def value_path(p: dict) -> str:
+    return f"{(p.get('provenance') or {})['folder']}/value.md"
+
+
+def add_value_task(runner, job, chain: dict, j: int) -> None:
+    """Value chunk j of a paper. Added when it can be written: the first once every part is read, each later one
+    once the one before it has written the assessment it revises."""
+    chain = chain_of(chain)
+    ws = workspace_of(runner, job)
+    p = runner.jobs.get_paper(job["id"], chain["paper"])
+    pieces = value_pieces(runner, job, p)
+    n, path = len(pieces), value_path(p)
+    draft = (ws / path).read_text(encoding="utf-8", errors="replace").strip() if j > 1 and (ws / path).is_file() else ""
+    r, i = chain["round"], chain["index"]
+    runner.jobs.append_tasks(job["id"], [{
+        "key": f"v{r}_{i}_{j}", "parent_key": chain["group"], "title": f"Value {j}/{n}: {p['title'][:60]}",
+        "depends_on": [f"v{r}_{i}_{j - 1}"] if j > 1 else [],
+        # Reviewed by a reviewer handed the same summaries and the assessment as text (the user's call, 2026-09-25).
+        "review": True, "max_attempts": REVIEWED_ATTEMPTS,
+        "params": {**chain, "value": j, "of": n, "material": True, "tools": ["write_file"]},
+        "instructions": VALUE.format(title=p["title"], span=span_of(j, n), text=pieces[j - 1] if pieces else "(none)",
+                                     draft=VALUE_DRAFT.format(draft=draft) if draft else "", path=path,
+                                     question=job["goal"], revise=VALUE_REVISE if draft else ""),
+        "done_when": f"{path} holds the value assessment",
+        "checks": [{"type": "file_contains", "path": path, "text": "## Value of this paper"}]}])
+
+
+def add_assemble_task(runner, job, chain: dict) -> None:
+    chain = chain_of(chain)
+    r, i = chain["round"], chain["index"]
+    keys = {t["key"] for t in runner.jobs.list_tasks(job["id"])}
+    refs = sorted(k for k in keys if k.startswith(f"rf{r}_{i}_"))
+    values = sorted((k for k in keys if k.startswith(f"v{r}_{i}_")), key=lambda k: int(k.rsplit("_", 1)[1]))
+    p = runner.jobs.get_paper(job["id"], chain["paper"])
+    runner.jobs.append_tasks(job["id"], [{
+        "key": f"w{r}_{i}", "parent_key": chain["group"], "title": f"Assemble the write-up: {p['title'][:60]}",
+        "kind": "code", "handler": "assemble_paper", "depends_on": values[-1:] + refs,
+        "params": {**chain, "assemble": True}, "instructions": "-",
+        "done_when": f"{paper_md(p['key'])} assembled from the summaries, notes and value assessment"}])
+
+
+def handle_assemble_paper(runner, job, task) -> HandlerResult:
+    """The write-up, put together by code from what the chain's tasks wrote: section summaries in order, every note
+    as a key claim citing its own id (so no citation can point at the wrong note), and the value assessment."""
+    ws = workspace_of(runner, job)
+    p = runner.jobs.get_paper(job["id"], task["params"]["paper"])
+    prov = p.get("provenance") or {}
+    folder = prov["folder"]
+    out = [f"# {p['title']}", "", "## Section summaries", ""]
+    for k in range(1, prov["parts"] + 1):
+        f = ws / folder / f"summary-{k:02d}.md"
+        if f.is_file():
+            out += [f"<!-- part {k} of {prov['parts']} -->", f.read_text(encoding="utf-8", errors="replace").strip(), ""]
+    notes = runner.jobs.list_notes(job["id"], p["file_path"])
+    out += ["## Key claims", ""]
+    out += [f"- {n['claim']} [n{n['id']}]" + (f" ({n['location']})" if n.get("location") else "") for n in notes]
+    value = ws / value_path(p)
+    out += ["", value.read_text(encoding="utf-8", errors="replace").strip() if value.is_file()
+            else "## Value of this paper\n\n(No assessment was written.)", ""]
+    (ws / paper_md(p["key"])).write_text("\n".join(out), encoding="utf-8")
+    return HandlerResult(True, f"Assembled {paper_md(p['key'])}: {prov['parts']} part summaries, {len(notes)} key "
+                               "claims, and the value assessment.")
 
 
 def expand_report(runner, job, reason: str) -> None:
@@ -1203,6 +1329,18 @@ class DeepResearch(Template):
                      "done_when": "next round's candidates chosen, or the search stopped"}])
         elif task["kind"] == "code" and task["handler"] == "acquire":
             expand_paper(runner, job, task)
+        elif params.get("part_file") and "round" in params:
+            # The last part of a paper read: its summaries exist, so the value assessment can be handed them.
+            r, i = params["round"], params["index"]
+            tasks = runner.jobs.list_tasks(job["id"])
+            parts = [t for t in tasks if t["key"].startswith(f"p{r}_{i}_")]
+            if all(t["status"] == "done" for t in parts) and not any(t["key"].startswith(f"v{r}_{i}_") for t in tasks):
+                add_value_task(runner, job, params, 1)
+        elif params.get("value"):
+            if params["value"] < params["of"]:
+                add_value_task(runner, job, params, params["value"] + 1)
+            else:
+                add_assemble_task(runner, job, params)
         elif params.get("assemble"):
             runner.jobs.upsert_paper(job["id"], params["paper"], status="read")
         elif key.startswith("next_r"):
@@ -1258,5 +1396,6 @@ DEEP_RESEARCH = register(DeepResearch(
         "format": {"enum": ["md", "docx"], "label": "Report format", "default": "md"},
     },
     handlers={"find": handle_find, "acquire": handle_acquire, "next_pass": handle_next_pass, "digest": handle_digest,
-              "section_digest": handle_section_digest, "compile": handle_compile},
+              "section_digest": handle_section_digest, "compile": handle_compile,
+              "assemble_paper": handle_assemble_paper},
 ))

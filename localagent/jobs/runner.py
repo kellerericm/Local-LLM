@@ -478,6 +478,16 @@ class JobRunner:
             self._changed(job["id"])
             return
         attempt = task["attempts"] + 1
+        if (task["params"] or {}).get("material"):
+            # A task handed its material in the prompt does the whole of it every run, so whatever an earlier run
+            # left behind is stale: its notes would sit beside the new ones as duplicates (p1_1_1 left 243 notes
+            # for one section), and a ticked checklist would claim work this run hasn't done.
+            cleared = self.jobs.delete_notes_of_task(job["id"], task["key"])
+            self.jobs.update_task(task["id"], checklist=[])
+            if cleared:
+                self.jobs.journal(job["id"], "start", f"Cleared {cleared} note(s) left by earlier runs of this task; "
+                                                      "it starts over on its material.", task["key"])
+            task = self.jobs.get_task(task["id"])
         self.jobs.update_task(task["id"], status=T_RUNNING)
         run = self.jobs.create_run(job["id"], "task", task["id"], attempt)
         self.jobs.journal(job["id"], "start", f"Started: {task['title']} (attempt {attempt})", task["key"])
@@ -636,10 +646,10 @@ class JobRunner:
         self.jobs.journal(job["id"], "review", "Reviewing the result.", task["key"])
         cited_files = sorted({c["path"] for c in task["checks"] if c.get("type") == "citations_valid" and c.get("path")})
         citations = ""
+        workspace = Path(job_project(self.store, job)["workspace_path"])
         if cited_files:
-            project = job_project(self.store, job)
-            citations = citation_table(Path(project["workspace_path"]), cited_files, self.jobs.list_notes(job["id"]))
-        outcome = self._execute(session, review_request(job, task, summary, new_context, citations))
+            citations = citation_table(workspace, cited_files, self.jobs.list_notes(job["id"]))
+        outcome = self._execute(session, review_request(job, task, summary, new_context, citations, workspace))
         res = session.result
         if not res or res.get("kind") != "review":
             self.jobs.finish_run(run["id"], "failed", outcome, "No verdict", session.steps)

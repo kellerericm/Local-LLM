@@ -67,12 +67,27 @@ def render_checklist(items: list[dict]) -> str:
     return "\n".join(f"{'[x]' if i.get('done') else '[ ]'} {i['text']}" for i in items)
 
 
-def render_block(tasks: list[dict], context: list[dict], listing: str, current: dict | None = None) -> str:
+def render_builds_on(tasks: list[dict]) -> str:
+    """The tasks this one depends on, each with its whole result: the part of the plan a task actually uses."""
+    if not tasks:
+        return "(none: this task starts from the goal and the workspace)"
+    return "\n".join(f"{BOX.get(t['status'], '[ ]')} [{t['key']}] {t['title']}"
+                     + (f" — {t['result_summary']}" if t.get("result_summary") else "") for t in tasks)
+
+
+def render_block(tasks: list[dict] | None, context: list[dict], listing: str, current: dict | None = None,
+                 builds_on: list[dict] | None = None) -> str:
+    """tasks: the whole job plan, for planning. A task session passes tasks=None and builds_on instead: the job
+    plan grows with every paper a round keeps (281 tasks, 11.5k tokens), and in a task's prompt it filled the window
+    before the task had said anything."""
     parts = ["## Job scratchpad (persistent, shared by every task of this job)",
              "### Workspace top level", listing or "(unavailable)",
              f"### Context ({context_chars(context)} characters)" if not CONTEXT_CHAR_LIMIT else
-             f"### Context ({context_chars(context)}/{CONTEXT_CHAR_LIMIT} characters used)", render_context(context),
-             "### Task list", render_task_list(tasks, current["key"] if current else None)]
+             f"### Context ({context_chars(context)}/{CONTEXT_CHAR_LIMIT} characters used)", render_context(context)]
+    if tasks is not None:
+        parts += ["### Task list", render_task_list(tasks, current["key"] if current else None)]
+    if builds_on is not None:
+        parts += ["### Results of the tasks this one builds on", render_builds_on(builds_on)]
     if current is not None:
         parts += ["### Your checklist for this task", render_checklist(current.get("checklist") or [])]
     return "\n".join(parts)

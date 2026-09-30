@@ -117,32 +117,41 @@ def tick_until(env, job_id, predicate, limit=40):
 
 
 def reader(refs=None, quote="Text of https"):
-    """Scripted reading. Part tasks: write the part summary and save a note. Write-up tasks: write the paper summary
-    (and record references when asked)."""
+    """Scripted interpreting, by what the task was handed. A part: write its summary and save a note. A chunk of a
+    reference list: record it. Part summaries: write the value assessment."""
     def respond(msgs):
         system = msgs[0]["content"]
         part = re.search(r"Write (papers/\S+/summary-\d+\.md)", system)
         if part:
             src = re.search(r'source "(papers/\S+/part-\d+\.md)"', system).group(1)
-            return (call("write_file", path=part.group(1), content="### Intro\nok") +
+            return (call("write_file", path=part.group(1), content="### Intro\nok\n### What this section contributes\nx") +
                     call("add_note", claim="The paper's text", quote=quote, source=src))
-        md = re.search(r"Write (papers/[^/\s]+\.md)", system).group(1)
-        out = call("write_file", path=md, content="# X\n## Section summaries\n### Intro\nok\n## Key claims\n- c [n1]\n"
-                                                  "## Value of this paper\nuseful")
-        if "call record_references" in system:
-            out += call("record_references", references=refs.pop(0) if refs else [])
-        return out
+        if "--- REFERENCES BEGIN ---" in system:
+            return call("record_references", references=refs.pop(0) if refs else [])
+        value = re.search(r"Write (papers/\S+/value\.md)", system).group(1)
+        return call("write_file", path=value, content="## Value of this paper\nuseful")
     return respond
 
 
-def read_paper_responses(n, refs=None, quote="Text of https"):
-    """Part task (no review) then write-up task (reviewed), per paper with one part."""
+def read_paper_responses(n, refs=None, quote="Text of https", ref_chunks=0):
+    """Pre-written replies that stand in for the model in these tests, for reading n papers of one chunk each.
+
+    Per paper: the chunk's step, then the reference-list step (ref_chunks=1 when the paper's text has a reference
+    list; 0 when the search database already supplied it), then the value step and its review. Each reply looks at
+    what it was asked: a reviewer passes the work, a step that has done its work finishes, and otherwise it does the
+    work its text calls for."""
     r = reader(refs, quote)
-    out = []
-    for _ in range(n):
-        out += [r, call("complete_task", summary="Summarized the part."),
-                r, call("complete_task", summary="Wrote up the paper."), call("report_review", verdict="pass")]
-    return out
+
+    def reply(msgs):
+        system = msgs[0]["content"]
+        if "# You are a reviewer" in system:
+            return call("report_review", verdict="pass")
+        if any(m["role"] == "tool" for m in msgs):         # the work is done: finish
+            return call("complete_task", summary="Finished what this task was handed.")
+        return r(msgs)
+
+    # Two replies per step, plus one for the review of each value step.
+    return [reply] * (n * (2 * (2 + ref_chunks) + 1))
 
 
 def start(env, job, screen_responses=None):
@@ -242,11 +251,12 @@ def test_folder_seeds_skip_screening_and_use_extracted_references(env_factory, w
     still feed the next round's candidate list."""
     (workspace / "papers").mkdir()
     for name in ("one", "two"):
-        make_pdf(workspace / "papers" / f"{name}.pdf", [f"Paper {name} about hippocampal replay."])
+        make_pdf(workspace / "papers" / f"{name}.pdf", [f"Paper {name} about hippocampal replay.", "More on replay.",
+                                                        "References", "Shared Classic. 1990."])
     ref_lists = [[{"title": "Shared Classic", "year": 1990}, {"title": "Only once", "year": 2000}],
                  [{"title": "Shared Classic", "year": 1990}]]
 
-    responses = read_paper_responses(2, ref_lists, quote="about hippocampal replay")
+    responses = read_paper_responses(2, ref_lists, quote="about hippocampal replay", ref_chunks=1)
     responses += keep(1, summary="The classic is worth reading.")
     env = env_factory(responses)
     env.runner.scholar = FakeScholar(workspace)
@@ -374,7 +384,7 @@ def test_full_text_fallback_and_long_papers_are_read_in_full(env_factory, worksp
     assert a["Paper A"]["provenance"]["source"].startswith("open-access full text")
     assert (workspace / a["Paper A"]["provenance"]["folder"] / "references.txt").read_text(encoding="utf-8").count(
         "Foster") == 1
-    assert task_by_key(env, job, "w0_1") is not None                     # reading tasks for A were added
+    assert task_by_key(env, job, "p0_1_1") is not None                   # reading tasks for A were added
     prov = env.jobs.get_paper(job["id"], a["Paper B"]["key"])["provenance"]
     parts = prov["parts"]
     assert task_by_key(env, job, f"p0_2_{parts}") is not None             # every part of B gets a reading task
@@ -471,17 +481,69 @@ def test_reviewed_report_tasks_get_more_attempts(env_factory, workspace):
     assert tasks["section_digest"]["max_attempts"] == 0               # nothing is capped unless the user caps it
 
 
-def test_paper_write_ups_get_the_same_attempts_as_reviewed_writing(env_factory, workspace):
-    """A write-up that runs out of attempts costs the paper's reference list, and with it that paper's contribution
-    to the next round."""
-    from localagent.jobs.templates.deep_research import REVIEWED_ATTEMPTS
-    env = env_factory(keep(1, summary="Paper A is relevant here."))
+def test_each_step_is_handed_its_text_and_code_assembles_the_write_up(env_factory, workspace):
+    """The user's six steps: each chunk is handed to the model with an instruction, in a fresh context; the reference
+    list is handed over the same way; code assembles the write-up; the value step is handed the summaries."""
+    (workspace / "papers").mkdir()
+    make_pdf(workspace / "papers" / "one.pdf", ["Paper one about hippocampal replay.", "More on replay.",
+                                                "References", "Shared Classic. 1990."])
+    env = env_factory(read_paper_responses(1, [[{"title": "Shared Classic", "year": 1990}]],
+                                           quote="about hippocampal replay", ref_chunks=1))
     env.runner.scholar = FakeScholar(workspace)
-    job = make_job(env, seeds="replay", seed_count="1", screen_batch="2")
-    start(env, job)
-    assert tick_until(env, job["id"], lambda: task_by_key(env, job, "w0_1") is not None)
-    assert task_by_key(env, job, "w0_1")["max_attempts"] == REVIEWED_ATTEMPTS == 0
-    assert task_by_key(env, job, "p0_1_1")["max_attempts"] == 0      # no ceiling on reading either
+    job = env.jobs.create_job(env.project["id"], "R", "Q?", template="deep_research", permissions=["net:open-access"],
+                              inputs={"seed_mode": "folder", "seeds": "papers", "max_rounds": "1"})
+    env.runner._tick()
+    env.runner.approve_plan(job["id"])
+    assert tick_until(env, job["id"], lambda: status_of(env, job, "w0_1") == "done")
+
+    prompts = [c["messages"][0]["content"] for c in env.backend.calls]
+    part, refs, value = (next(p for p in prompts if marker in p) for marker in
+                         ("--- SECTION 1 OF 1 BEGINS ---", "--- REFERENCES BEGIN ---", "--- SUMMARIES BEGIN ---"))
+    assert "Paper one about hippocampal replay." in part and "Shared Classic" not in part   # the list is set aside
+    assert "Shared Classic. 1990." in refs
+    assert "### What this section contributes" in value                                    # the summaries, handed over
+    for p in (part, refs, value):
+        assert "### Task list" not in p                                                    # nothing else of the job
+    for c in env.backend.calls:                                        # no step can go and fetch anything
+        names = {t["function"]["name"] for t in c["tools"]}
+        assert not {"read_file", "search_notes", "grep", "glob", "list_dir"} & names
+
+    paper = env.jobs.list_papers(job["id"])[0]
+    assert paper["status"] == "read" and [r["title"] for r in paper["extracted_references"]] == ["Shared Classic"]
+    note = env.jobs.list_notes(job["id"])[0]
+    md = (workspace / "papers" / (paper["key"].replace(":", "-") + ".md")).read_text(encoding="utf-8") \
+        if (workspace / "papers" / (paper["key"].replace(":", "-") + ".md")).exists() else \
+        next((workspace / "papers").glob("*.md")).read_text(encoding="utf-8")
+    assert "## Section summaries" in md and "### What this section contributes" in md
+    assert f"- {note['claim']} [n{note['id']}]" in md                  # every note, citing its own id
+    assert "## Value of this paper\nuseful" in md
+
+    # The value step's reviewer is handed the same summaries and the assessment as text, and nothing to fetch
+    review = next(c for c in env.backend.calls if "# You are a reviewer" in c["messages"][0]["content"])
+    request = review["messages"][1]["content"]
+    assert "### What this section contributes" in request and "## Value of this paper\nuseful" in request
+    assert {t["function"]["name"] for t in review["tools"]} == {"report_review"}
+
+
+def test_a_rerun_chunk_starts_without_the_notes_it_left_before(env_factory, workspace):
+    """p1_1_1 left 243 notes for one section over repeated runs. A step handed its text redoes all of it, so what
+    an earlier run of it saved is cleared first, and nothing else is."""
+    (workspace / "papers").mkdir()
+    make_pdf(workspace / "papers" / "one.pdf", ["Paper one about hippocampal replay.", "More on replay."])
+    env = env_factory([call("complete_task", summary="Nothing worth noting in this section.")])
+    env.runner.scholar = FakeScholar(workspace)
+    job = env.jobs.create_job(env.project["id"], "R", "Q?", template="deep_research", permissions=["net:open-access"],
+                              inputs={"seed_mode": "folder", "seeds": "papers", "max_rounds": "1"})
+    # Notes an earlier run of p0_1_1 left behind, and one from a different task
+    for n in range(3):
+        env.jobs.add_note(job["id"], "papers/one.pdf", f"old claim {n}", "about hippocampal replay", task_key="p0_1_1")
+    env.jobs.add_note(job["id"], "papers/one.pdf", "another task's note", "More on replay", task_key="other")
+    env.runner._tick()
+    env.runner.approve_plan(job["id"])
+    assert tick_until(env, job["id"], lambda: (task_by_key(env, job, "p0_1_1") or {}).get("attempts", 0) >= 1
+                      or status_of(env, job, "p0_1_1") == "done")
+    assert [n["claim"] for n in env.jobs.list_notes(job["id"])] == ["another task's note"]
+    assert any("Cleared 3 note(s)" in j["text"] for j in env.jobs.list_journal(job["id"]))
 
 
 def test_wikipedia_seeds_take_the_articles_cited_works(env_factory, workspace):

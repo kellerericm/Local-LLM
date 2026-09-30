@@ -28,6 +28,19 @@ Check, using the read tools to look at the actual files and notes:
 
 Check every claim that matters, however many tool calls that takes, then call report_review exactly once. For a fail, give specific, fixable issues with evidence."""
 
+REVIEW_TEXT_BLOCK = """
+# You are a reviewer
+Another agent just finished one task of a longer job. You did not do the work. Below are the instructions it was
+given, including the whole of the text it was handed, and what it wrote. That is everything: there is nothing to
+open or fetch. Decide whether the result is acceptable. Be strict about real problems and fair about everything
+else: don't fail work for style or for things the task didn't ask for.
+
+1. Does what it wrote do what the instructions asked?
+2. Is every statement in it supported by the text it was handed? Name any statement that goes beyond that text or
+   contradicts it, and say what the text actually says.
+
+Then call report_review exactly once. For a fail, give specific, fixable issues with evidence from the text."""
+
 
 def report_review(ctx: ToolContext, verdict: str, issues: list[dict] | None = None,
                   bad_context_ids: list[str] | None = None) -> ToolResult:
@@ -62,10 +75,17 @@ class ReviewSession(JobSession):
     def event_fields(self) -> dict:
         return {**super().event_fields(), "task_key": self.task["key"], "review": True}
 
+    def handed_text(self) -> bool:
+        """The worker was handed its material as text, so the reviewer is too, and has nothing to fetch."""
+        return bool((self.task.get("params") or {}).get("material"))
+
     def system_prompt(self, ctx) -> str:
-        return base_prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project) + "\n" + REVIEW_BLOCK
+        block = REVIEW_TEXT_BLOCK if self.handed_text() else REVIEW_BLOCK
+        return base_prompts.system_prompt(str(ctx.workspace), str(ctx.env_path), ctx.project) + "\n" + block
 
     def tools(self, registry: ToolRegistry, ctx) -> list[Tool]:
+        if self.handed_text():
+            return [REPORT_REVIEW]
         available = {t.name: t for t in registry.available(ctx)}
         return [available[n] for n in REVIEW_TOOLS if n in available] + [SEARCH_NOTES, CHECK_CITATIONS, REPORT_REVIEW]
 
@@ -106,9 +126,23 @@ def citation_table(workspace: Path, paths: list[str], notes: list[dict], limit: 
     return "\n".join(out)
 
 
-def review_request(job: dict, task: dict, summary: str, new_context: list[dict], citations: str = "") -> str:
+def review_request(job: dict, task: dict, summary: str, new_context: list[dict], citations: str = "",
+                   workspace: Path | None = None) -> str:
     outputs = sorted({c.get("path") for c in task["checks"] if c.get("path")} |
                      set((task.get("params") or {}).get("outputs") or []))
+    if (task.get("params") or {}).get("material") and workspace is not None:
+        # Handed its text: the reviewer gets the same text, and what the worker wrote, in the prompt.
+        written = []
+        for rel in outputs:
+            f = workspace / rel
+            body = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else "(the file does not exist)"
+            written.append(f"--- {rel} BEGINS ---\n{body}\n--- {rel} ENDS ---")
+        return "\n\n".join([f"**Job goal:** {job['goal']}",
+                            f"**Task [{task['key']}]:** {task['title']}",
+                            f"**Instructions given to the worker, with the text it was handed:**\n{task['instructions']}",
+                            f"**Worker's summary:** {summary}",
+                            "**What the worker wrote:**\n" + ("\n\n".join(written) or "(no output file declared)"),
+                            "Review it, then call report_review."])
     parts = [f"**Job goal:** {job['goal']}",
              f"**Task [{task['key']}]:** {task['title']}",
              f"**Instructions given to the worker:** {task['instructions'] or '-'}",

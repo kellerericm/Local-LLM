@@ -231,6 +231,10 @@ def record_references(ctx: ToolContext, references: list[dict], paper: str = "")
         cleaned.append({"key": k, "title": title, "year": year, "doi": doi, "arxiv": arxiv,
                         "first_author": str(r.get("first_author") or "").strip() or None})
     existing = conv.jobs.get_paper(conv.job["id"], key)
+    # Added to what is already recorded, not replacing it: a long reference list is handed over in chunks, one task
+    # each, and every chunk adds its entries. Recording the same entry again changes nothing.
+    have = {r["key"] for r in existing.get("extracted_references") or []}
+    cleaned = list(existing.get("extracted_references") or []) + [r for r in cleaned if r["key"] not in have]
     conv.jobs.upsert_paper(conv.job["id"], key, extracted_references=cleaned,
                            provenance={**(existing.get("provenance") or {}), "references_recorded": True})
     if not cleaned:
